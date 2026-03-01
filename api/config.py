@@ -12,11 +12,11 @@ class Settings(BaseSettings):
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 10000
 
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: str = "http://localhost:3000"
 
-    @field_validator('CORS_ORIGINS', mode='before')
+    @field_validator('CORS_ORIGINS', mode='after')
     @classmethod
-    def parse_cors_origins(cls, v):
+    def parse_cors_origins(cls, v) -> List[str]:
         if not v:
             return ["http://localhost:3000"]
         if isinstance(v, str):
@@ -60,9 +60,9 @@ class Settings(BaseSettings):
     AUTH_MESSAGE: str = "Sign this message to authenticate with Ethernal. Nonce: {nonce}"
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 1440                                      # 24 horas
+    JWT_EXPIRE_MINUTES: int = 1440                               
 
-    FAUCET_AMOUNT: float = 100.0                                        # USDC
+    FAUCET_AMOUNT: float = 10000.0                                
     FAUCET_COOLDOWN_HOURS: int = 24
     FAUCET_PRIVATE_KEY: Optional[str] = None
 
@@ -82,6 +82,7 @@ class Settings(BaseSettings):
         env_file=".env",
         case_sensitive=True,
         extra='ignore',
+        env_parse_none_str='',
     )
 
 settings = Settings()
