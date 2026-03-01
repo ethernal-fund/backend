@@ -1,0 +1,46 @@
+# ============================================================================
+# Ethernal Backend API - Production Requirements
+# Python 3.12.3
+# ============================================================================
+
+# Core Web Framework
+fastapi==0.129.0
+uvicorn[standard]==0.35.0
+pydantic==2.11.7
+pydantic-settings==2.13.1
+
+# ASGI Server
+gunicorn==23.0.0
+
+# Database
+sqlalchemy==2.0.41
+asyncpg==0.31.0
+alembic==1.18.4
+psycopg2-binary==2.9.11
+
+# HTTP Client (blockchain calls)
+httpx==0.28.1
+web3==7.14.1
+
+# Redis (rate limiting)
+redis==5.2.1
+hiredis==3.3.0
+
+# Auth (wallet signature verification)
+eth-account==0.13.7
+
+# Security
+cryptography==44.0.2
+
+# Monitoring
+sentry-sdk[fastapi]==2.22.0
+
+# Logging - Auth
+pyjwt==2.10.1
+python-json-logger==3.2.1
+python-dotenv==1.1.0
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.24.0
+httpx==0.28.1

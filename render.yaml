@@ -1,0 +1,98 @@
+# ============================================================================
+# render.yaml — Ethernal Backend API
+# Infraestructura como código para Render
+# Docs: https://render.com/docs/blueprint-spec
+# ============================================================================
+
+services:
+  # Web Service (FastAPI) 
+  - type: web
+    name: ethernal-backend
+    runtime: python
+    region: oregon          # Cambiá a "ohio" si tu Supabase está en us-east-1
+    plan: free              # Cambiá a "starter" ($7/mes) para evitar cold starts
+    
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api.main:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:10000
+
+    healthCheckPath: /health  # Asegurate de tener este endpoint en main.py
+
+    envVars:
+      # Python version — importante para evitar que Render use 3.14
+      - key: PYTHON_VERSION
+        value: 3.12.3
+
+      - key: ENVIRONMENT
+        value: production
+
+      - key: DEBUG
+        value: false
+
+      - key: LOG_LEVEL
+        value: INFO
+
+      # CORS
+      - key: CORS_ORIGINS
+        value: "https://ethernal.fund,https://www.ethernal.fund,https://frontend-9aivuawfr-ethernalllc-funds-projects.vercel.app"
+
+      # Base de datos — Supabase
+      - key: DATABASE_URL
+        sync: false   # Se carga manualmente desde el dashboard de Render
+
+      # Redis 
+      - key: REDIS_URL
+        fromService:
+          name: ethernal-redis
+          type: redis
+          property: connectionString
+
+      # Blockchain
+      - key: RPC_URL
+        sync: false
+      - key: CHAIN_ID
+        value: "11155111"
+
+      # Contratos
+      - key: FACTORY_ADDRESS
+        sync: false
+      - key: TREASURY_ADDRESS
+        sync: false
+      - key: USDC_ADDRESS
+        sync: false
+      - key: PROTOCOL_REGISTRY_ADDRESS
+        sync: false
+
+      # Admin
+      - key: ADMIN_WALLET
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+
+      # JWT
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRE_MINUTES
+        value: "1440"
+
+      # Faucet
+      - key: FAUCET_PRIVATE_KEY
+        sync: false
+      - key: FAUCET_AMOUNT
+        value: "10000"
+      - key: FAUCET_COOLDOWN_HOURS
+        value: "24"
+
+      # Sentry
+      - key: SENTRY_ENABLED
+        value: false
+      - key: SENTRY_DSN
+        value: ""
+
+  # Redis 
+  - type: redis
+    name: ethernal-redis
+    region: oregon
+    plan: free             
+    maxmemoryPolicy: allkeys-lru

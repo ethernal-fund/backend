@@ -1,0 +1,53 @@
+# ============================================================================
+# .gitignore — Ethernal Backend
+# ============================================================================
+
+# Variables de entorno — NUNCA EN EL REPO (no usar .env como nombre de commit)
+.env
+.env.local
+.env.production
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+.backend/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Alembic — NO ignorar versions/, sí son parte del repo
+# alembic/versions/   ← dejar comentado
+
+# Render
+# render.yaml NO se ignora — es parte del repo
