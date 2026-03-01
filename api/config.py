@@ -34,11 +34,19 @@ class Settings(BaseSettings):
             return [str(origin).strip() for origin in v if origin]
         return v
 
-    DATABASE_URL: str                                            
+    DATABASE_URL: str
     REDIS_URL: Optional[str] = None
 
+    @field_validator('DATABASE_URL', mode='before')
+    @classmethod
+    def fix_database_url(cls, v: str) -> str:
+        return (
+            v.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+             .replace("postgresql://", "postgresql+asyncpg://")
+        )
+
     RPC_URL: str
-    CHAIN_ID: int = 11155111                                     
+    CHAIN_ID: int = 11155111
 
     FACTORY_ADDRESS: str
     TREASURY_ADDRESS: str
@@ -60,7 +68,7 @@ class Settings(BaseSettings):
 
     INDEXER_INTERVAL_SECONDS: int = 30
     INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
-    INDEXER_START_BLOCK: int = 0                                       
+    INDEXER_START_BLOCK: int = 0
 
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_REQUESTS: int = 100
