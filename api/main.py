@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
 
+from api.v1.routers import users, funds, treasury, protocols, admin, contact, survey
 from api.config import settings
 from api.db.session import engine, close_db
 from api.db.base import Base
@@ -61,6 +62,8 @@ app.include_router(funds.router,     prefix="/v1")
 app.include_router(treasury.router,  prefix="/v1")
 app.include_router(protocols.router, prefix="/v1")
 app.include_router(admin.router,     prefix="/v1")
+app.include_router(contact.router, prefix="/v1")
+app.include_router(survey.router,  prefix="/v1")
 
 @app.get("/")
 async def root():
