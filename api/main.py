@@ -61,7 +61,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"],
+    allow_origins=settings.CORS_ORIGINS,        
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -76,7 +76,7 @@ app.include_router(treasury.router, prefix="/v1/treasury", tags=["treasury"])
 app.include_router(protocols.router, prefix="/v1/protocols", tags=["protocols"])
 app.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
 app.include_router(contact.router, prefix="/v1/contact", tags=["contact"])
-app.include_router(survey.router, prefix="/v1/surveys", tags=["survey"]) 
+app.include_router(survey.router, prefix="/v1/surveys", tags=["survey"])
 
 @app.get("/health")
 async def health():
