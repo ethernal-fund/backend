@@ -70,13 +70,13 @@ app.add_middleware(
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-app.include_router(users.router, prefix="/v1/users", tags=["users"])
-app.include_router(funds.router, prefix="/v1/funds", tags=["funds"])
-app.include_router(treasury.router, prefix="/v1/treasury", tags=["treasury"])
-app.include_router(protocols.router, prefix="/v1/protocols", tags=["protocols"])
-app.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
-app.include_router(contact.router, prefix="/v1/contact", tags=["contact"])
-app.include_router(survey.router, prefix="/v1/surveys", tags=["survey"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(funds.router, prefix="/api/v1/funds", tags=["funds"])
+app.include_router(treasury.router, prefix="/api/v1/treasury", tags=["treasury"])
+app.include_router(protocols.router, prefix="/api/v1/protocols", tags=["protocols"])
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
+app.include_router(contact.router, prefix="/api/v1/contact", tags=["contact"])
+app.include_router(survey.router, prefix="/api/v1/surveys", tags=["survey"])
 
 @app.get("/health")
 async def health():

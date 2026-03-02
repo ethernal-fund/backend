@@ -33,7 +33,7 @@ async def submit_survey(
     logger.info(f"New anonymous survey submitted id={survey.id}")
     return {"success": True, "survey_id": survey.id}
 
-@router.post("/followup")
+@router.post("/follow-up")
 async def submit_followup(
     payload: FollowUpCreate,
     db: AsyncSession = Depends(get_db),
