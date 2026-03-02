@@ -25,28 +25,43 @@ if settings.SENTRY_ENABLED and settings.SENTRY_DSN:
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting {settings.APP_NAME} [{settings.ENVIRONMENT}]")
-    logger.info("Database ready")
+    if settings.DEBUG:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logging.info("Tablas creadas (modo DEBUG)")
+
+    logging.info("Starting Ethernal Backend API [%s]", settings.ENVIRONMENT)
+    logging.info("Database ready at %s", datetime.utcnow().isoformat())
     yield
     await close_db()
-    logger.info("Shutdown complete")
+    logging.info("Application shutdown complete")
 
 app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
+    title="Ethernal Backend API",
+    description="API para gestión de fondos de retiro con integración blockchain (USDC, protocols, treasury)",
+    version="production",
+    docs_url="/docs",
+    redoc_url="/redoc",
     lifespan=lifespan,
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_tags=[
+        {"name": "users", "description": "Autenticación y perfil de usuarios (wallet-based)"},
+        {"name": "funds", "description": "Fondos personales de retiro"},
+        {"name": "treasury", "description": "Gestión de fees y solicitudes de retiro anticipado"},
+        {"name": "protocols", "description": "Protocolos DeFi soportados"},
+        {"name": "admin", "description": "Panel administrativo (stats, indexer)"},
+        {"name": "contact", "description": "Formulario de contacto"},
+        {"name": "survey", "description": "Encuestas anónimas y follow-up"},
+    ],
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,37 +70,13 @@ app.add_middleware(
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-from api.v1.routers import users, funds, treasury, protocols, admin
-
-app.include_router(users.router,     prefix="/v1")
-app.include_router(funds.router,     prefix="/v1")
-app.include_router(treasury.router,  prefix="/v1")
-app.include_router(protocols.router, prefix="/v1")
-app.include_router(admin.router,     prefix="/v1")
-app.include_router(contact.router, prefix="/v1")
-app.include_router(survey.router,  prefix="/v1")
-
-@app.get("/")
-async def root():
-    return {
-        "name":        settings.APP_NAME,
-        "version":     settings.APP_VERSION,
-        "environment": settings.ENVIRONMENT,
-        "chain_id":    settings.CHAIN_ID,
-        "endpoints": {
-            "auth":         "POST /v1/users/nonce  →  POST /v1/users/auth",
-            "profile":      "GET  /v1/users/me",
-            "survey":       "POST /v1/users/survey",
-            "fund":         "GET  /v1/funds/me",
-            "transactions": "GET  /v1/funds/me/transactions",
-            "sync":         "POST /v1/funds/sync",
-            "treasury":     "GET  /v1/treasury/stats",
-            "early_retire": "POST /v1/treasury/early-retirement/request",
-            "protocols":    "GET  /v1/protocols/",
-            "admin":        "GET  /v1/admin/stats",
-            "health":       "GET  /health",
-        },
-    }
+app.include_router(users.router, prefix="/v1/users", tags=["users"])
+app.include_router(funds.router, prefix="/v1/funds", tags=["funds"])
+app.include_router(treasury.router, prefix="/v1/treasury", tags=["treasury"])
+app.include_router(protocols.router, prefix="/v1/protocols", tags=["protocols"])
+app.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
+app.include_router(contact.router, prefix="/v1/contact", tags=["contact"])
+app.include_router(survey.router, prefix="/v1/surveys", tags=["survey"]) 
 
 @app.get("/health")
 async def health():
@@ -101,4 +92,13 @@ async def health():
         "rpc_connected": rpc_ok,
         "environment":   settings.ENVIRONMENT,
         "timestamp":     datetime.utcnow().isoformat(),
+    }
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Ethernal Backend API - v1",
+        "docs": "/docs",
+        "health": "/health",
+        "environment": settings.ENVIRONMENT,
     }
