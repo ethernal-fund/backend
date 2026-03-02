@@ -7,7 +7,7 @@ from api.db.repositories.survey_repo import SurveyRepository
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/survey", tags=["survey"])
+router = APIRouter(tags=["survey"])
 
 class SurveyCreate(BaseModel):
     age:                      str
