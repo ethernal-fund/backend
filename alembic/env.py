@@ -1,9 +1,10 @@
 """
-alembic/env.py — App Principal
+alembic/env.py — Faucet API
 
-Configuración de Alembic para la app principal (usuarios, fondos, protocolos).
-Apunta exclusivamente al schema 'public' de PostgreSQL.
-Nunca toca el schema 'faucet' que pertenece al servicio faucet-api.
+Configuración de Alembic para el servicio faucet-api.
+Apunta exclusivamente al schema 'faucet' de PostgreSQL.
+La tabla de versiones (alembic_version) también vive en ese schema,
+así que nunca colisiona con la app principal que usa 'public'.
 """
 import asyncio
 import os
@@ -14,22 +15,23 @@ from alembic import context
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-# ── Importar modelos de la app principal ─────────────────────────────────────
-# Ajustar el import según la estructura real del repo
-from app.models import Base
+# ── Importar modelos para que Alembic los detecte ────────────────────────────
+from api.models import Base
 
-config          = context.config
-target_metadata = Base.metadata
+# ── Config de Alembic ─────────────────────────────────────────────────────────
+config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+target_metadata = Base.metadata
+
+_SCHEMA = "faucet"
 
 def _get_db_url() -> str:
     url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
     if not url:
         raise ValueError("DATABASE_URL no configurada")
-
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://"):
@@ -37,13 +39,11 @@ def _get_db_url() -> str:
 
     return url
 
-
 def _get_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode    = ssl.CERT_NONE
     return ctx
-
 
 def run_migrations_offline() -> None:
     url = _get_db_url()
@@ -52,14 +52,12 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        # Solo operar en 'public' — nunca tocar 'faucet'
         version_table="alembic_version",
-        version_table_schema="public",
-        include_schemas=False,
+        version_table_schema=_SCHEMA,
+        include_schemas=True,
     )
     with context.begin_transaction():
         context.run_migrations()
-
 
 async def _run_async_migrations() -> None:
     connectable = create_async_engine(
@@ -72,36 +70,28 @@ async def _run_async_migrations() -> None:
     )
 
     async with connectable.connect() as connection:
-        # search_path solo en 'public' — el schema 'faucet' es invisible
-        await connection.execute(text("SET search_path TO public"))
-
-        await connection.run_sync(_configure_and_run)
+        await connection.execute(text(f"SET search_path TO {_SCHEMA}, public"))
+        await connection.run_sync(_configure_and_run)  # ← sin segundo argumento
 
     await connectable.dispose()
 
-
-def _configure_and_run(sync_conn) -> None:
+def _configure_and_run(sync_conn) -> None:  # ← sin async_conn=None
     context.configure(
         connection=sync_conn,
         target_metadata=target_metadata,
-        # alembic_version vive en 'public'
         version_table="alembic_version",
-        version_table_schema="public",
-        # include_schemas=False garantiza que Alembic ignore schemas ajenos
-        include_schemas=False,
-        # Excluir explícitamente el schema 'faucet' del autogenerate
+        version_table_schema=_SCHEMA,
+        include_schemas=True,
         include_name=lambda name, type_, parent_names: (
-            False if type_ == "schema" and name == "faucet"
-            else True
+            True if type_ == "schema" and name == _SCHEMA
+            else parent_names.get("schema_name") == _SCHEMA
         ),
     )
     with context.begin_transaction():
         context.run_migrations()
 
-
 def run_migrations_online() -> None:
     asyncio.run(_run_async_migrations())
-
 
 if context.is_offline_mode():
     run_migrations_offline()
