@@ -44,6 +44,13 @@ class Settings(BaseSettings):
             v.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
              .replace("postgresql://", "postgresql+asyncpg://")
         )
+    
+    @field_validator("REDIS_URL")
+    @classmethod
+    def validate_redis(cls, v, info):
+        if info.data.get("RATE_LIMIT_ENABLED") and not v:
+            raise ValueError("REDIS_URL is required when RATE_LIMIT_ENABLED=True")
+        return v
 
     RPC_URL: str
     CHAIN_ID: int = 11155111
