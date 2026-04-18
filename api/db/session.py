@@ -17,7 +17,10 @@ engine = create_async_engine(
     max_overflow=10,
     pool_pre_ping=True,       # verifica conexiones muertas antes de usarlas
     pool_recycle=1800,        # recicla conexiones cada 30min (Supabase cierra idle a los 60min)
-    pool_timeout=30,          
+    pool_timeout=30,    
+    connect_args={
+        "statement_cache_size":0,
+    },   
 )
 
 AsyncSessionLocal = async_sessionmaker(
