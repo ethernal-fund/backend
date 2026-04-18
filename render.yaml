@@ -2,57 +2,71 @@
 # render.yaml — Ethernal Backend API
 # Infraestructura como código para Render
 # Docs: https://render.com/docs/blueprint-spec
+#
+# ORDEN DE DEPLOY:
+#   1. Hacer deploy de este blueprint completo (crea Redis primero)
+#   2. Render resuelve REDIS_URL automáticamente desde ethernal-redis
+#   3. El web service arranca después de que Redis esté Available
 # ============================================================================
 
 services:
-  # Web Service (FastAPI) 
+  # ── Web Service (FastAPI) ──────────────────────────────────────────────────
   - type: web
     name: ethernal-backend
     runtime: python
-    region: oregon         
-    plan: free             
-    
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn api.main:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:10000
+    region: oregon
+    plan: free
 
-    healthCheckPath: /health  # Asegurate de tener este endpoint en main.py
+    buildCommand: pip install -r requirements.txt
+
+    # $PORT es asignado dinámicamente por Render — NUNCA hardcodear el puerto.
+    # -w 1 en free tier (512MB RAM): 2 workers consumen ~400MB+ y causan OOM.
+    # Subir a -w 2 solo en paid plan con 1GB+ RAM.
+    startCommand: gunicorn api.main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+
+    # Render llama a este endpoint para saber si el servicio está listo.
+    # Debe retornar 2xx. Nuestro /health retorna 200 o 503.
+    healthCheckPath: /health
 
     envVars:
-      # Python version — importante para evitar que Render use 3.14
+      # ── Runtime ────────────────────────────────────────────────────────────
       - key: PYTHON_VERSION
-        value: 3.12.3
+        value: "3.12.3"
 
       - key: ENVIRONMENT
         value: production
 
       - key: DEBUG
-        value: false
+        value: "false"
 
       - key: LOG_LEVEL
         value: INFO
 
-      # CORS
+      # ── CORS ───────────────────────────────────────────────────────────────
       - key: CORS_ORIGINS
         value: "https://ethernal.fund,https://www.ethernal.fund,https://frontend-9aivuawfr-ethernalllc-funds-projects.vercel.app"
 
-      # Base de datos — Supabase
+      # ── Base de datos (Supabase) ────────────────────────────────────────────
+      # sync: false → setear manualmente en Render Dashboard → Environment
       - key: DATABASE_URL
-        sync: false   # Se carga manualmente desde el dashboard de Render
+        sync: false
 
-      # Redis 
+      # ── Redis ──────────────────────────────────────────────────────────────
+      # Render resuelve esto automáticamente desde el servicio ethernal-redis.
+      # Si el blueprint se deploya completo, ethernal-redis se crea primero.
       - key: REDIS_URL
         fromService:
           name: ethernal-redis
           type: redis
           property: connectionString
 
-      # Blockchain
+      # ── Blockchain ─────────────────────────────────────────────────────────
       - key: RPC_URL
         sync: false
       - key: CHAIN_ID
         value: "11155111"
 
-      # Contratos
+      # ── Contratos ──────────────────────────────────────────────────────────
       - key: FACTORY_ADDRESS
         sync: false
       - key: TREASURY_ADDRESS
@@ -62,13 +76,13 @@ services:
       - key: PROTOCOL_REGISTRY_ADDRESS
         sync: false
 
-      # Admin
+      # ── Admin ──────────────────────────────────────────────────────────────
       - key: ADMIN_WALLET
         sync: false
       - key: ADMIN_API_KEY
         sync: false
 
-      # JWT
+      # ── JWT ────────────────────────────────────────────────────────────────
       - key: JWT_SECRET
         sync: false
       - key: JWT_ALGORITHM
@@ -76,7 +90,7 @@ services:
       - key: JWT_EXPIRE_MINUTES
         value: "1440"
 
-      # Faucet
+      # ── Faucet ─────────────────────────────────────────────────────────────
       - key: FAUCET_PRIVATE_KEY
         sync: false
       - key: FAUCET_AMOUNT
@@ -84,15 +98,23 @@ services:
       - key: FAUCET_COOLDOWN_HOURS
         value: "24"
 
-      # Sentry
+      # ── Rate limiting ──────────────────────────────────────────────────────
+      # Mantener en true — Redis está disponible en este deploy
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+
+      # ── Sentry (opcional) ──────────────────────────────────────────────────
       - key: SENTRY_ENABLED
-        value: false
+        value: "false"
       - key: SENTRY_DSN
         value: ""
 
-  # Redis 
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  # Render crea este servicio ANTES que el web service cuando se usa blueprint.
   - type: redis
     name: ethernal-redis
     region: oregon
-    plan: free             
+    plan: free
     maxmemoryPolicy: allkeys-lru
+    # ipAllowList vacío = solo accesible desde servicios internos de Render (más seguro)
+    ipAllowList: []
