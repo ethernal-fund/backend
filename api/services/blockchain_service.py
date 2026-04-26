@@ -1,5 +1,5 @@
 from web3 import Web3
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 import asyncio
@@ -12,6 +12,9 @@ USDC_DECIMALS = 6
 
 def _from_usdc(raw: int) -> Decimal:
     return Decimal(raw) / Decimal(10 ** USDC_DECIMALS)
+
+def _ts(unix: int) -> datetime:
+    return datetime.fromtimestamp(unix, tz=timezone.utc)
 
 FUND_ABI = [
     {"name": "getFundInfo", "type": "function", "stateMutability": "view",
@@ -123,9 +126,9 @@ class BlockchainService:
             "auto_withdrawal_enabled":          auto[0],
             "auto_withdrawal_amount":           _from_usdc(auto[1]) if auto[1] else None,
             "auto_withdrawal_interval_seconds": auto[2],
-            "next_auto_withdrawal_at":          datetime.utcfromtimestamp(auto[3]) if auto[3] else None,
+            "next_auto_withdrawal_at":          _ts(auto[3]) if auto[3] else None,
             "auto_withdrawal_execution_count":  auto[4],
-            "last_auto_withdrawal_at":          datetime.utcfromtimestamp(auto[5]) if auto[5] else None,
+            "last_auto_withdrawal_at":          _ts(auto[5]) if auto[5] else None,
         }
 
     async def get_treasury_stats(self) -> dict:
@@ -160,13 +163,14 @@ class BlockchainService:
                     "is_active":        p[3],
                     "total_deposited":  _from_usdc(p[4]),
                     "risk_level":       p[5],
-                    "added_at":         datetime.utcfromtimestamp(p[6]),
-                    "last_updated_at":  datetime.utcfromtimestamp(p[7]) if p[7] else None,
+                    "added_at":         _ts(p[6]),
+                    "last_updated_at":  _ts(p[7]) if p[7] else None,
                     "is_verified":      p[8],
                 }
             except Exception as exc:
                 logger.warning("Failed to get protocol %s: %s", addr, exc)
                 return None
+
         results = await asyncio.gather(*(_fetch_one(addr) for addr in valid_addresses))
         return [r for r in results if r is not None]
 

@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from web3 import Web3
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
 import logging
@@ -13,6 +13,8 @@ from api.db.repositories.protocol_repo import ProtocolRepository
 from api.services.blockchain_service import BlockchainService
 from api.config import settings
 
+def _ts(unix: int) -> datetime:
+    return datetime.fromtimestamp(unix, tz=timezone.utc)
 logger = logging.getLogger(__name__)
 
 USDC_DECIMALS = 6
@@ -127,10 +129,8 @@ class IndexerService:
         last_block    = await self.txs.get_last_indexed_block()
         current_block = await self._block_number()
         from_block    = max(last_block + 1, current_block - settings.INDEXER_MAX_BLOCKS_PER_CYCLE)
-
         if from_block > current_block:
             return {"indexed": 0, "message": "Already up to date"}
-
         logger.info("Indexing blocks %d → %d", from_block, current_block)
         fund_created, fund_events, fee_events = await asyncio.gather(
             self._index_fund_created(from_block, current_block),
@@ -159,15 +159,13 @@ class IndexerService:
         except Exception as exc:
             logger.error("Error fetching FundCreated events: %s", exc)
             return 0
-
         indexed = 0
         for event in events:
             try:
                 args        = event["args"]
                 block       = await self._get_block(event["blockNumber"])
-                ts          = datetime.utcfromtimestamp(block["timestamp"])
-                timelock_end = datetime.utcfromtimestamp(args["timelockEnd"])
-
+                ts          = _ts(block["timestamp"])
+                timelock_end = _ts(args["timelockEnd"])
                 await self.users.get_or_create(args["owner"])
                 await self.funds.create_from_event({
                     "contract_address":  args["fundAddress"].lower(),
@@ -202,7 +200,6 @@ class IndexerService:
                     "Error indexing FundCreated %s: %s",
                     event["transactionHash"].hex(), exc,
                 )
-
         return indexed
 
     async def _index_fund_events(self, from_block: int, to_block: int) -> int:
@@ -242,7 +239,7 @@ class IndexerService:
                         try:
                             args  = event["args"]
                             block = await self._get_block(event["blockNumber"])
-                            ts    = datetime.utcfromtimestamp(block["timestamp"])
+                            ts    = _ts(block["timestamp"])
 
                             tx_data = {
                                 "id":              event["transactionHash"].hex().lower(),
@@ -284,7 +281,6 @@ class IndexerService:
 
             except Exception as exc:
                 logger.error("Error processing fund %s: %s", fund.contract_address, exc)
-
         return indexed
 
     async def _index_fee_events(self, from_block: int, to_block: int) -> int:
@@ -304,9 +300,7 @@ class IndexerService:
                 args      = event["args"]
                 amount    = _from_usdc(args["amount"])
                 fund_addr = args["fundAddress"].lower()
-
                 await self.treasury.upsert_fee_record(fund_addr, amount)
-
                 fund = await self.funds.get_by_contract(fund_addr)
                 if fund:
                     block = await self._get_block(event["blockNumber"])
@@ -318,11 +312,10 @@ class IndexerService:
                         "event_type":      "fee_received",
                         "fee_amount":      amount,
                         "block_number":    event["blockNumber"],
-                        "block_timestamp": datetime.utcfromtimestamp(block["timestamp"]),
+                        "block_timestamp": _ts(block["timestamp"]),
                         "log_index":       event["logIndex"],
                     })
                 indexed += 1
             except Exception as exc:
                 logger.error("Error indexing FeeReceived: %s", exc)
-
         return indexed

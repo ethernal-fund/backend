@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from sqlalchemy import text
+
 from api.config import settings
 from api.core.exceptions import (
     EthernalException,
     ethernal_exception_handler,
     global_exception_handler,
 )
-from api.core.redis import close_redis, get_redis, ping_redis
+from api.core.redis import close_redis, get_redis
 from api.db.base import Base
-from api.db.session import close_db, engine, get_db
+from api.db.session import close_db, engine
 from api.v1.routers import admin, contact, funds, protocols, survey, treasury, users
 
 def _configure_logging() -> None:
@@ -52,9 +51,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} [{settings.ENVIRONMENT}]")
+    logger.info(
+        "Starting %s v%s [%s]",
+        settings.APP_NAME,
+        settings.APP_VERSION,
+        settings.ENVIRONMENT,
+    )
 
-    # Crear tablas en desarrollo
     if settings.DEBUG:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -64,7 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await redis.ping()
         logger.info("Redis connection OK")
     except Exception as e:
-        logger.error(f"Redis unavailable: {e}")
+        logger.error("Redis unavailable: %s", e)
         if settings.ENVIRONMENT == "production":
             raise RuntimeError("Redis is required in production") from e
     try:
@@ -72,9 +75,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await conn.execute(text("SELECT 1"))
         logger.info("Database connection OK")
     except Exception as e:
-        logger.critical(f"Database unavailable: {e}")
+        logger.critical("Database unavailable: %s", e)
         raise
-
     logger.info("Application startup completed successfully")
     yield
     logger.info("Shutting down...")
@@ -85,24 +87,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    docs_url="/docs"  if settings.ENVIRONMENT != "production" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,  
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Exception handlers
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# Routers
 API_PREFIX = "/api/v1"
 
 app.include_router(users.router,     prefix=API_PREFIX)
@@ -116,18 +116,18 @@ app.include_router(survey.router,    prefix=API_PREFIX)
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy",
-        "service": settings.APP_NAME,
-        "version": settings.APP_VERSION,
+        "status":      "healthy",
+        "service":     settings.APP_NAME,
+        "version":     settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
     }
 
 @app.get("/")
 async def root():
     return {
-        "service": settings.APP_NAME,
-        "version": settings.APP_VERSION,
+        "service":     settings.APP_NAME,
+        "version":     settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
-        "health": "/health",
-        "docs": "/docs" if settings.ENVIRONMENT != "production" else None,
+        "health":      "/health",
+        "docs":        "/docs" if settings.ENVIRONMENT != "production" else None,
     }
