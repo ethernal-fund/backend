@@ -38,13 +38,13 @@ FUND_ABI = [
 TREASURY_ABI = [
     {"name": "getTreasuryStats", "type": "function", "stateMutability": "view",
      "inputs": [], "outputs": [{"components": [
-         {"name": "totalFeesCollectedUSDC",        "type": "uint256"},
-         {"name": "totalFeesCollectedAllTime",      "type": "uint256"},
-         {"name": "totalFundsRegistered",           "type": "uint256"},
-         {"name": "activeFundsCount",               "type": "uint256"},
-         {"name": "totalEarlyRetirementRequests",   "type": "uint256"},
-         {"name": "approvedEarlyRetirements",       "type": "uint256"},
-         {"name": "rejectedEarlyRetirements",       "type": "uint256"},
+         {"name": "totalFeesCollectedUSDC",      "type": "uint256"},
+         {"name": "totalFeesCollectedAllTime",    "type": "uint256"},
+         {"name": "totalFundsRegistered",         "type": "uint256"},
+         {"name": "activeFundsCount",             "type": "uint256"},
+         {"name": "totalEarlyRetirementRequests", "type": "uint256"},
+         {"name": "approvedEarlyRetirements",     "type": "uint256"},
+         {"name": "rejectedEarlyRetirements",     "type": "uint256"},
      ], "type": "tuple"}]},
     {"name": "getTreasuryBalance", "type": "function", "stateMutability": "view",
      "inputs": [], "outputs": [{"type": "uint256"}]},
@@ -115,7 +115,6 @@ class BlockchainService:
             asyncio.to_thread(contract.functions.getBalances().call),
             asyncio.to_thread(contract.functions.getAutoWithdrawalInfo().call),
         )
-
         return {
             "total_balance":                    _from_usdc(balances[0]),
             "available_balance":                _from_usdc(balances[1]),
@@ -136,26 +135,25 @@ class BlockchainService:
             asyncio.to_thread(treasury.functions.getTreasuryBalance().call),
         )
         return {
-            "balance_usdc":                float(_from_usdc(balance)),
-            "total_fees_collected_usdc":   float(_from_usdc(stats[0])),
-            "total_fees_all_time":         float(_from_usdc(stats[1])),
-            "total_funds_registered":      stats[2],
-            "active_funds":                stats[3],
-            "early_retirement_requests":   stats[4],
-            "approved_early_retirements":  stats[5],
-            "rejected_early_retirements":  stats[6],
+            "balance_usdc":               float(_from_usdc(balance)),
+            "total_fees_collected_usdc":  float(_from_usdc(stats[0])),
+            "total_fees_all_time":        float(_from_usdc(stats[1])),
+            "total_funds_registered":     stats[2],
+            "active_funds":               stats[3],
+            "early_retirement_requests":  stats[4],
+            "approved_early_retirements": stats[5],
+            "rejected_early_retirements": stats[6],
         }
 
     async def get_all_protocols(self) -> list[dict]:
         registry  = self._registry_contract()
         addresses = await asyncio.to_thread(registry.functions.getAllProtocols().call)
-        protocols = []
-        for addr in addresses:
-            if addr == ZERO_ADDRESS:
-                continue
+        valid_addresses = [a for a in addresses if a != ZERO_ADDRESS]
+
+        async def _fetch_one(addr: str) -> Optional[dict]:
             try:
                 p = await asyncio.to_thread(registry.functions.getProtocol(addr).call)
-                protocols.append({
+                return {
                     "protocol_address": addr.lower(),
                     "name":             p[1],
                     "apy":              p[2] / 100,
@@ -165,10 +163,12 @@ class BlockchainService:
                     "added_at":         datetime.utcfromtimestamp(p[6]),
                     "last_updated_at":  datetime.utcfromtimestamp(p[7]) if p[7] else None,
                     "is_verified":      p[8],
-                })
-            except Exception as e:
-                logger.warning(f"Failed to get protocol {addr}: {e}")
-        return protocols
+                }
+            except Exception as exc:
+                logger.warning("Failed to get protocol %s: %s", addr, exc)
+                return None
+        results = await asyncio.gather(*(_fetch_one(addr) for addr in valid_addresses))
+        return [r for r in results if r is not None]
 
     async def get_protocol_registry_stats(self) -> dict:
         registry = self._registry_contract()
