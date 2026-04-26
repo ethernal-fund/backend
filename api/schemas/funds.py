@@ -1,81 +1,57 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from web3 import Web3
+from __future__ import annotations
 
-from api.db.session import get_db
-from api.db.repositories.fund_repo import FundRepository
-from api.db.repositories.transaction_repo import TransactionRepository
-from api.core.dependencies import get_current_wallet
-from api.core.exceptions import FundNotFound
-from api.schemas.funds import FundOut, FundSyncRequest
-from api.services.blockchain_service import BlockchainService
-import logging
+from datetime import datetime
+from decimal import Decimal
+from typing import Optional
 
-logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/funds", tags=["funds"])
+from pydantic import BaseModel, Field
 
-@router.get("/me", response_model=FundOut)
-async def get_my_fund(
-    wallet: str = Depends(get_current_wallet),
-    db: AsyncSession = Depends(get_db),
-):
-    repo = FundRepository(db)
-    fund = await repo.get_by_owner(wallet)
-    if not fund:
-        raise FundNotFound(wallet)
-    return fund
+class FundOut(BaseModel):
+    # Identity
+    contract_address: str
+    owner_wallet:     str
 
-@router.get("/{contract_address}", response_model=FundOut)
-async def get_fund(
-    contract_address: str,
-    db: AsyncSession = Depends(get_db),
-):
-    if not Web3.is_address(contract_address):
-        raise HTTPException(status_code=400, detail="Invalid contract address")
+    principal:         Decimal
+    monthly_deposit:   Decimal
+    current_age:       int
+    retirement_age:    int
+    desired_monthly:   Decimal
+    years_payments:    int
+    interest_rate:     int        # basis points
+    timelock_years:    int
+    timelock_end:      datetime
+    selected_protocol: Optional[str] = None
 
-    repo = FundRepository(db)
-    fund = await repo.get_by_contract(contract_address)
-    if not fund:
-        raise FundNotFound(contract_address)
-    return fund
+    total_gross_deposited: Decimal
+    total_fees_paid:       Decimal
+    total_net_to_fund:     Decimal
+    total_balance:         Decimal
+    available_balance:     Decimal
+    total_invested:        Decimal
+    total_withdrawn:       Decimal
 
-@router.post("/sync")
-async def sync_fund(
-    payload: FundSyncRequest,
-    wallet: str = Depends(get_current_wallet),
-    db: AsyncSession = Depends(get_db),
-):
-    fund_repo = FundRepository(db)
-    fund = await fund_repo.get_by_owner(wallet)
-    if not fund:
-        raise FundNotFound(wallet)
+    monthly_deposit_count:           int
+    extra_deposit_count:             int
+    withdrawal_count:                int
+    auto_withdrawal_execution_count: int
 
-    if fund.contract_address.lower() != payload.contract_address.lower():
-        raise HTTPException(status_code=403, detail="Not your fund")
+    is_active:                 bool
+    retirement_started:        bool
+    early_retirement_approved: bool
+    auto_withdrawal_enabled:   bool
 
-    try:
-        blockchain = BlockchainService()
-        on_chain_data = await blockchain.get_fund_info(fund.contract_address)
-        await fund_repo.update_balances(fund.contract_address, on_chain_data)
-        logger.info(f"Fund synced: {fund.contract_address}")
-        return {"success": True, "message": "Fund synced from blockchain"}
-    except Exception as e:
-        logger.error(f"Fund sync failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Blockchain sync failed: {str(e)}")
+    auto_withdrawal_amount:           Optional[Decimal]  = None
+    auto_withdrawal_interval_seconds: Optional[int]      = None
+    next_auto_withdrawal_at:          Optional[datetime] = None
+    retirement_started_at:            Optional[datetime] = None
 
-@router.get("/me/transactions")
-async def get_my_transactions(
-    event_type: str = None,
-    skip: int = 0,
-    limit: int = 50,
-    wallet: str = Depends(get_current_wallet),
-    db: AsyncSession = Depends(get_db),
-):
-    """Historial de transacciones del usuario autenticado."""
-    repo = TransactionRepository(db)
-    txs = await repo.get_by_wallet(wallet, event_type=event_type, skip=skip, limit=limit)
-    return {
-        "wallet": wallet,
-        "transactions": txs,
-        "count": len(txs),
-    }
+    # Timestamps
+    created_at:    datetime
+    last_synced_at: Optional[datetime] = None
+    created_block:  Optional[int]      = None
+
+    class Config:
+        from_attributes = True
+
+class FundSyncRequest(BaseModel):
+    contract_address: str = Field(..., description="Checksum Ethereum address of the fund contract")
