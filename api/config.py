@@ -15,20 +15,18 @@ class Settings(BaseSettings):
     LOG_LEVEL:   str = "INFO"
 
     # URLs base
-    APP_URL:     str = "https://ethernal.fund"     
-    APP_DOMAIN:  str = "ethernal.fund"             
+    APP_URL:    str = "https://ethernal.fund"
+    APP_DOMAIN: str = "ethernal.fund"
 
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 10000
+    ALLOWED_ORIGINS: List[str] = ["https://ethernal.fund", "https://www.ethernal.fund", "http://localhost:5173"]
 
-    ALLOWED_ORIGINS: str = "https://ethernal.fund,https://www.ethernal.fund,http://localhost:5173"
-
-    @field_validator("ALLOWED_ORIGINS", mode="after")
+    @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
-    def parse_allowed_origins(cls, v: str) -> List[str]:
+    def parse_allowed_origins(cls, v) -> List[str]:
         if not v:
             return ["http://localhost:5173"]
-        
         if isinstance(v, list):
             return [str(o).strip() for o in v if o]
         if isinstance(v, str):
@@ -89,12 +87,12 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINUTES: int = 1440   # 24 horas
 
     # Faucet
-    FAUCET_AMOUNT:        float = 10000.0
-    FAUCET_COOLDOWN_HOURS: int = 24
-    FAUCET_PRIVATE_KEY:   Optional[str] = None
+    FAUCET_AMOUNT:         float = 10000.0
+    FAUCET_COOLDOWN_HOURS: int   = 24
+    FAUCET_PRIVATE_KEY:    Optional[str] = None
 
     # Indexer
-    INDEXER_INTERVAL_SECONDS:    int = 30
+    INDEXER_INTERVAL_SECONDS:     int = 30
     INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
 
     # Sentry

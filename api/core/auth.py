@@ -20,7 +20,6 @@ NONCE_KEY_PREFIX = "nonce:"
 async def generate_nonce(wallet_address: str) -> str:
     nonce = secrets.token_hex(16)
     key = NONCE_KEY_PREFIX + wallet_address.lower()
-
     redis = await get_redis()
     await redis.setex(key, NONCE_TTL_SECONDS, nonce)
     logger.debug("Nonce generated for %s", wallet_address[:10])
@@ -36,13 +35,20 @@ async def consume_nonce(wallet_address: str) -> None:
     redis = await get_redis()
     await redis.delete(key)
 
+def build_auth_message(wallet_address: str, nonce: str) -> str:
+    return settings.AUTH_MESSAGE.format(
+        domain=settings.APP_DOMAIN or "ethernal.fund",
+        wallet=wallet_address,
+        nonce=nonce,
+        uri=settings.APP_URL,
+        chain_id=settings.CHAIN_ID,
+    )
+
 def verify_signature(wallet_address: str, signature: str, nonce: str) -> bool:
     try:
-        # Usamos el mismo mensaje que se firmó en el frontend
-        message = f"{settings.APP_DOMAIN or 'ethernal.fund'} wants you to sign in with your Ethereum account:\n{wallet_address}\n\nNonce: {nonce}\n\nURI: {settings.APP_URL}\nVersion: 1\nChain ID: {settings.CHAIN_ID}\nNonce: {nonce}"
+        message = build_auth_message(wallet_address, nonce)
         message_hash = encode_defunct(text=message)
         recovered = Account.recover_message(message_hash, signature=signature)
-
         return recovered.lower() == wallet_address.lower()
     except Exception as exc:
         logger.warning("Signature verification failed: %s", exc)
@@ -58,3 +64,20 @@ def create_access_token(wallet_address: str) -> str:
         "type": "access",
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+def decode_token(token: str) -> Optional[dict]:
+    try:
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except jwt.ExpiredSignatureError:
+        logger.warning("Token expired")
+        return None
+    except jwt.InvalidTokenError as exc:
+        logger.warning("Invalid token: %s", exc)
+        return None
+
+def is_admin(wallet: str) -> bool:
+    return wallet.lower() == settings.ADMIN_WALLET.lower()  # Retorn true if the wallet matches the admin wallet 

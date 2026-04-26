@@ -9,16 +9,17 @@ from api.core.auth import (
     consume_nonce,
     verify_signature,
     create_access_token,
+    build_auth_message,
 )
 from api.core.dependencies import get_current_wallet
 from api.core.exceptions import InvalidSignature, SurveyAlreadyCompleted
 from api.core.rate_limit import limiter
 from api.schemas.users import (
-    NonceRequest, 
-    NonceResponse, 
-    AuthRequest, 
+    NonceRequest,
+    NonceResponse,
+    AuthRequest,
     AuthResponse,
-    SurveySubmit, 
+    SurveySubmit,
     UserOut,
 )
 from api.config import settings
@@ -32,14 +33,12 @@ async def request_nonce(
     payload: NonceRequest,
     request: Request,
 ):
-
     await limiter(request, max_requests=10, window=60, key_prefix="nonce")
     nonce = await generate_nonce(payload.wallet_address)
-    message = settings.AUTH_MESSAGE.format(nonce=nonce)
+    message = build_auth_message(payload.wallet_address, nonce)
     logger.info("Nonce generated for wallet: %s", payload.wallet_address[:10])
 
     return NonceResponse(nonce=nonce, message=message)
-
 
 @router.post("/auth", response_model=AuthResponse)
 async def authenticate(
@@ -58,6 +57,7 @@ async def authenticate(
     await consume_nonce(payload.wallet_address)
     if not verify_signature(payload.wallet_address, payload.signature, payload.nonce):
         raise InvalidSignature()
+
     repo = UserRepository(db)
     user, created = await repo.get_or_create(payload.wallet_address)
     token = create_access_token(payload.wallet_address)

@@ -9,7 +9,7 @@ from api.core.rate_limit import limiter
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["contact"])
+router = APIRouter(prefix="/contact", tags=["contact"])
 
 class ContactCreate(BaseModel):
     name:          str           = Field(..., min_length=2,  max_length=100)

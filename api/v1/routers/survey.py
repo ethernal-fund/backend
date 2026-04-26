@@ -9,7 +9,7 @@ from api.core.rate_limit import limiter
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["survey"])
+router = APIRouter(prefix="/survey", tags=["survey"])
 
 class SurveyCreate(BaseModel):
     age:                      str
@@ -32,7 +32,6 @@ async def submit_survey(
     db: AsyncSession = Depends(get_db),
 ):
     await limiter(request, max_requests=5, window=300, key_prefix="survey")
-
     repo = SurveyRepository(db)
     survey = await repo.create_survey(payload.model_dump())
     logger.info("New anonymous survey submitted id=%d", survey.id)
