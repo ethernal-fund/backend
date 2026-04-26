@@ -14,8 +14,12 @@ from api.core.dependencies import get_current_wallet
 from api.core.exceptions import InvalidSignature, SurveyAlreadyCompleted
 from api.core.rate_limit import limiter
 from api.schemas.users import (
-    NonceRequest, NonceResponse, AuthRequest, AuthResponse,
-    SurveySubmit, UserOut,
+    NonceRequest, 
+    NonceResponse, 
+    AuthRequest, 
+    AuthResponse,
+    SurveySubmit, 
+    UserOut,
 )
 from api.config import settings
 import logging
@@ -23,16 +27,17 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["users"])
 
-
 @router.post("/nonce", response_model=NonceResponse)
 async def request_nonce(
     payload: NonceRequest,
     request: Request,
 ):
-    await limiter(request, max_requests=10, window=60, key_prefix="nonce")
 
+    await limiter(request, max_requests=10, window=60, key_prefix="nonce")
     nonce = await generate_nonce(payload.wallet_address)
     message = settings.AUTH_MESSAGE.format(nonce=nonce)
+    logger.info("Nonce generated for wallet: %s", payload.wallet_address[:10])
+
     return NonceResponse(nonce=nonce, message=message)
 
 
@@ -42,21 +47,6 @@ async def authenticate(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Verifica la firma ECDSA y emite un JWT.
-
-    Flujo:
-      1. Recupera el nonce activo de Redis.
-      2. Verifica que coincida con el enviado.
-      3. Verifica la firma de wallet.
-      4. Consume el nonce (invalidación de un solo uso).
-      5. Crea o recupera el usuario en DB.
-      6. Emite JWT.
-
-    Rate limit: 10 requests / 60s por IP.
-    El nonce se invalida independientemente del resultado de la firma
-    para evitar ataques de enumeración.
-    """
     await limiter(request, max_requests=10, window=60, key_prefix="auth")
 
     stored_nonce = await get_nonce(payload.wallet_address)
@@ -66,10 +56,8 @@ async def authenticate(
         raise HTTPException(status_code=401, detail="Invalid or expired nonce")
 
     await consume_nonce(payload.wallet_address)
-
     if not verify_signature(payload.wallet_address, payload.signature, payload.nonce):
         raise InvalidSignature()
-
     repo = UserRepository(db)
     user, created = await repo.get_or_create(payload.wallet_address)
     token = create_access_token(payload.wallet_address)
@@ -81,6 +69,7 @@ async def authenticate(
 
     return AuthResponse(
         access_token=token,
+        token_type="bearer",
         wallet_address=payload.wallet_address,
         expires_in=settings.JWT_EXPIRE_MINUTES * 60,
     )
@@ -95,7 +84,6 @@ async def get_me(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
-
 
 @router.post("/survey", response_model=UserOut)
 async def submit_survey(

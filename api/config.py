@@ -6,7 +6,6 @@ from typing import List, Optional
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
 
     APP_NAME:    str = "Ethernal Backend API"
@@ -15,40 +14,38 @@ class Settings(BaseSettings):
     DEBUG:       bool = False
     LOG_LEVEL:   str = "INFO"
 
+    # URLs base
+    APP_URL:     str = "https://ethernal.fund"     
+    APP_DOMAIN:  str = "ethernal.fund"             
+
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 10000
 
-    # Acepta string CSV ("http://a.com,http://b.com") o JSON array ("[...]")
-    CORS_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_ORIGINS: str = "https://ethernal.fund,https://www.ethernal.fund,http://localhost:5173"
 
-    @field_validator("CORS_ORIGINS", mode="after")
+    @field_validator("ALLOWED_ORIGINS", mode="after")
     @classmethod
-    def parse_cors_origins(cls, v) -> List[str]:
+    def parse_allowed_origins(cls, v: str) -> List[str]:
         if not v:
-            return ["http://localhost:3000"]
+            return ["http://localhost:5173"]
+        
         if isinstance(v, list):
             return [str(o).strip() for o in v if o]
         if isinstance(v, str):
             v = v.strip()
-            if not v:
-                return ["http://localhost:3000"]
             if v.startswith("["):
                 try:
                     return json.loads(v)
                 except Exception:
                     pass
             return [o.strip() for o in v.split(",") if o.strip()]
-        return v
+        return ["http://localhost:5173"]
 
-    DATABASE_URL: str  # requerido — sin default
+    DATABASE_URL: str
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def normalize_database_url(cls, v: str) -> str:
-        """
-        Normaliza la URL para usar asyncpg independientemente de cómo
-        esté configurada (Supabase suele dar URLs con psycopg2 o sin driver).
-        """
         if not v:
             raise ValueError("DATABASE_URL is required")
         return (
@@ -58,68 +55,66 @@ class Settings(BaseSettings):
 
     REDIS_URL: Optional[str] = None
 
+    # Rate Limiting
     RATE_LIMIT_ENABLED:  bool = True
     RATE_LIMIT_REQUESTS: int  = 100
-    RATE_LIMIT_WINDOW:   int  = 60   # segundos
+    RATE_LIMIT_WINDOW:   int  = 60
 
-    RPC_URL:  str  # requerido
-    CHAIN_ID: int = 11155111  # Sepolia testnet
+    # Blockchain
+    RPC_URL:  str
+    CHAIN_ID: int = 421614   # Arbitrum Sepolia por defecto
 
-    FACTORY_ADDRESS:           str  # requerido
-    TREASURY_ADDRESS:          str  # requerido
-    USDC_ADDRESS:              str  # requerido
-    PROTOCOL_REGISTRY_ADDRESS: str  # requerido
+    FACTORY_ADDRESS:           str
+    TREASURY_ADDRESS:          str
+    USDC_ADDRESS:              str
+    PROTOCOL_REGISTRY_ADDRESS: str
 
-    ADMIN_WALLET:   str  # requerido
-    ADMIN_API_KEY:  str  # requerido
+    ADMIN_WALLET:   str
+    ADMIN_API_KEY:  str
     API_KEY_HEADER: str = "X-API-Key"
 
-    AUTH_MESSAGE:       str = "Sign this message to authenticate with Ethernal. Nonce: {nonce}"
-    JWT_SECRET:         str  # requerido
-    JWT_ALGORITHM:      str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 1440  # 24 horas
+    # Auth
+    AUTH_MESSAGE: str = (
+        "{domain} wants you to sign in with your Ethereum account:\n"
+        "{wallet}\n\n"
+        "Nonce: {nonce}\n\n"
+        "URI: {uri}\n"
+        "Version: 1\n"
+        "Chain ID: {chain_id}\n"
+        "Nonce: {nonce}"
+    )
 
-    FAUCET_AMOUNT:        float         = 10000.0
-    FAUCET_COOLDOWN_HOURS: int          = 24
+    JWT_SECRET:         str
+    JWT_ALGORITHM:      str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 1440   # 24 horas
+
+    # Faucet
+    FAUCET_AMOUNT:        float = 10000.0
+    FAUCET_COOLDOWN_HOURS: int = 24
     FAUCET_PRIVATE_KEY:   Optional[str] = None
 
+    # Indexer
     INDEXER_INTERVAL_SECONDS:    int = 30
     INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
-    INDEXER_START_BLOCK:         int = 0
 
-    SENTRY_ENABLED:            bool         = False
+    # Sentry
+    SENTRY_ENABLED:            bool = False
     SENTRY_DSN:                Optional[str] = None
-    SENTRY_TRACES_SAMPLE_RATE: float         = 0.1
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
 
     @model_validator(mode="after")
     def validate_cross_field(self) -> "Settings":
-        """
-        Validaciones que dependen de múltiples campos.
-        @model_validator(mode="after") corre cuando TODOS los campos
-        ya fueron validados individualmente — sin problemas de ordering.
-        """
-        # Redis requerido si rate limiting está habilitado
         if self.RATE_LIMIT_ENABLED and not self.REDIS_URL:
-            raise ValueError(
-                "REDIS_URL is required when RATE_LIMIT_ENABLED=True. "
-                "Either set REDIS_URL or set RATE_LIMIT_ENABLED=false."
-            )
-
-        # JWT_SECRET debe tener mínimo 32 chars en producción
-        if self.ENVIRONMENT == "production" and len(self.JWT_SECRET) < 32:
-            raise ValueError(
-                "JWT_SECRET must be at least 32 characters in production. "
-                "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
-            )
-
+            raise ValueError("REDIS_URL is required when RATE_LIMIT_ENABLED=True")
+        if self.ENVIRONMENT == "production" and len(self.JWT_SECRET or "") < 32:
+            raise ValueError("JWT_SECRET must be at least 32 characters in production")
         return self
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore",           # ignorar vars desconocidas (seguro para forward compat)
-        env_parse_none_str="",    # string vacío se trata como None en Optional fields
+        extra="ignore",
+        env_parse_none_str="",
     )
-
 settings = Settings()
