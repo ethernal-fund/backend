@@ -1,15 +1,18 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from typing import Optional
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db.models.fund import PersonalFund
-from api.core.exceptions import FundNotFound, FundAlreadyExists
+from api.core.exceptions import FundAlreadyExists, FundNotFound
 
 class FundRepository:
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
     async def get_by_contract(self, contract_address: str) -> Optional[PersonalFund]:
@@ -28,7 +31,17 @@ class FundRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_all_active(self, skip: int = 0, limit: int = 1000) -> list[PersonalFund]:
+        result = await self.db.execute(
+            select(PersonalFund)
+            .where(PersonalFund.is_active == True)
+            .offset(skip)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def create(self, data: dict) -> PersonalFund:
+        """Create a fund; raises FundAlreadyExists if owner already has one."""
         existing = await self.get_by_owner(data["owner_wallet"])
         if existing:
             raise FundAlreadyExists(data["owner_wallet"])
@@ -46,7 +59,9 @@ class FundRepository:
         await self.db.flush()
         return fund
 
-    async def update_balances(self, contract_address: str, balances: dict) -> PersonalFund:
+    async def update_balances(
+        self, contract_address: str, balances: dict
+    ) -> PersonalFund:
         fund = await self.get_by_contract(contract_address)
         if not fund:
             raise FundNotFound(contract_address)
@@ -57,7 +72,9 @@ class FundRepository:
         await self.db.flush()
         return fund
 
-    async def mark_retirement_started(self, contract_address: str) -> Optional[PersonalFund]:
+    async def mark_retirement_started(
+        self, contract_address: str
+    ) -> Optional[PersonalFund]:
         fund = await self.get_by_contract(contract_address)
         if not fund:
             return None
@@ -65,15 +82,6 @@ class FundRepository:
         fund.retirement_started_at = datetime.utcnow()
         await self.db.flush()
         return fund
-
-    async def get_all_active(self, skip: int = 0, limit: int = 1000) -> list[PersonalFund]:
-        result = await self.db.execute(
-            select(PersonalFund)
-            .where(PersonalFund.is_active == True)
-            .offset(skip)
-            .limit(limit)
-        )
-        return list(result.scalars().all())
 
     async def count_total(self) -> int:
         result = await self.db.execute(
