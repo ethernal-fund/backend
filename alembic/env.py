@@ -14,6 +14,7 @@ from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from api.db.base import Base
+import api.db.models 
 
 config = context.config
 
@@ -22,9 +23,10 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-_SCHEMA = "public"  
+_SCHEMA = "public"
 
 def include_object(object, name, type_, reflected, compare_to):
+    """Ignorar tablas de schemas internos de Supabase (auth, storage, realtime, etc.)"""
     schema = getattr(object, "schema", None)
     if schema is not None and schema != _SCHEMA:
         return False
@@ -75,7 +77,6 @@ async def _run_async_migrations() -> None:
     async with connectable.connect() as connection:
         await connection.execute(text(f"SET search_path TO {_SCHEMA}"))
         await connection.run_sync(_configure_and_run)
-
     await connectable.dispose()
 
 def _configure_and_run(sync_conn) -> None:
