@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +25,8 @@ async def register_fund(
 ):
     if not Web3.is_address(payload.contract_address):
         raise HTTPException(status_code=400, detail="Invalid contract_address")
-
+    if not Web3.is_address(payload.protocol_address):
+        raise HTTPException(status_code=400, detail="Invalid protocol_address")
     contract_address = Web3.to_checksum_address(payload.contract_address)
     fund_repo        = FundRepository(db)
 
@@ -48,10 +48,10 @@ async def register_fund(
         "current_age":       payload.current_age,
         "retirement_age":    payload.retirement_age,
         "years_payments":    payload.payment_years,
-        "interest_rate":     payload.apy_percent,
-        "timelock_years":    payload.timelock_years,
-        "timelock_end":      payload.timelock_end,
-        "selected_protocol": payload.protocol_address,
+        "interest_rate":     payload.interest_rate_bps,   # apy_percent → basis points
+        "timelock_years":    payload.timelock_years,       # derived by schema validator
+        "timelock_end":      payload.timelock_end,         # derived by schema validator
+        "selected_protocol": payload.protocol_address.lower(),
     })
 
     try:
@@ -85,8 +85,10 @@ async def sync_fund(
     fund      = await fund_repo.get_by_owner(wallet)
     if not fund:
         raise FundNotFound(wallet)
+
     if fund.contract_address.lower() != payload.contract_address.lower():
         raise HTTPException(status_code=403, detail="Not your fund")
+
     try:
         blockchain    = BlockchainService()
         on_chain_data = await blockchain.get_fund_info(fund.contract_address)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -68,44 +68,78 @@ class Settings(BaseSettings):
     PROTOCOL_REGISTRY_ADDRESS: str
 
     ADMIN_WALLET:   str
+    ADMIN_WALLETS:  Optional[str] = None  
     ADMIN_API_KEY:  str
     API_KEY_HEADER: str = "X-API-Key"
 
-    # Auth
+    @field_validator("ADMIN_API_KEY", mode="before")
+    @classmethod
+    def validate_admin_api_key(cls, v: str) -> str:
+        if not v or len(v) < 32:
+            raise ValueError("ADMIN_API_KEY must be at least 32 characters")
+        return v
+
+    def get_admin_wallets(self) -> Set[str]:
+        """Devuelve el set completo de wallets admin en lowercase."""
+        wallets = {self.ADMIN_WALLET.lower()}
+        if self.ADMIN_WALLETS:
+            for w in self.ADMIN_WALLETS.split(","):
+                w = w.strip().lower()
+                if w:
+                    wallets.add(w)
+        return wallets
+
     AUTH_MESSAGE: str = (
         "{domain} wants you to sign in with your Ethereum account:\n"
         "{wallet}\n\n"
-        "Nonce: {nonce}\n\n"
+        "Sign in to Ethernal Fund\n\n"
         "URI: {uri}\n"
         "Version: 1\n"
         "Chain ID: {chain_id}\n"
-        "Nonce: {nonce}"
+        "Nonce: {nonce}\n"
+        "Issued At: {issued_at}"
     )
 
-    JWT_SECRET:         str
-    JWT_ALGORITHM:      str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 1440   # 24 horas
+    JWT_SECRET:                str
+    JWT_ALGORITHM:             str = "HS256"
+    JWT_EXPIRE_MINUTES:        int = 60    
+    JWT_REFRESH_EXPIRE_MINUTES: int = 10080  # 7 días para refresh token
 
-    # Faucet
     FAUCET_AMOUNT:         float = 10000.0
     FAUCET_COOLDOWN_HOURS: int   = 24
     FAUCET_PRIVATE_KEY:    Optional[str] = None
 
-    # Indexer
+    @field_validator("FAUCET_PRIVATE_KEY", mode="before")
+    @classmethod
+    def validate_faucet_key(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = v.strip()
+        key = v.removeprefix("0x")
+        if len(key) != 64 or not all(c in "0123456789abcdefABCDEF" for c in key):
+            raise ValueError(
+                "FAUCET_PRIVATE_KEY must be a 32-byte hex string (64 hex chars, optional 0x prefix)"
+            )
+        return v
+
     INDEXER_INTERVAL_SECONDS:     int = 30
     INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
 
-    # Sentry
     SENTRY_ENABLED:            bool = False
     SENTRY_DSN:                Optional[str] = None
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
-
     @model_validator(mode="after")
     def validate_cross_field(self) -> "Settings":
         if self.RATE_LIMIT_ENABLED and not self.REDIS_URL:
             raise ValueError("REDIS_URL is required when RATE_LIMIT_ENABLED=True")
-        if self.ENVIRONMENT == "production" and len(self.JWT_SECRET or "") < 32:
-            raise ValueError("JWT_SECRET must be at least 32 characters in production")
+        if self.ENVIRONMENT == "production":
+            if len(self.JWT_SECRET or "") < 32:
+                raise ValueError("JWT_SECRET must be at least 32 characters in production")
+            if self.JWT_EXPIRE_MINUTES > 120:
+                raise ValueError(
+                    "JWT_EXPIRE_MINUTES should not exceed 120 in production "
+                    "(reduces exposure window on token compromise)"
+                )
         return self
 
     model_config = SettingsConfigDict(
@@ -115,4 +149,5 @@ class Settings(BaseSettings):
         extra="ignore",
         env_parse_none_str="",
     )
+
 settings = Settings()

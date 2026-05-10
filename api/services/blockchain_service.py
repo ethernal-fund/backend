@@ -16,69 +16,164 @@ def _from_usdc(raw: int) -> Decimal:
 def _ts(unix: int) -> datetime:
     return datetime.fromtimestamp(unix, tz=timezone.utc)
 
+# FIX #1: getFundInfo retorna 11 valores en este orden (según el contrato):
+#   [0] owner (address)
+#   [1] principal (uint256)
+#   [2] monthlyDeposit (uint256)
+#   [3] retirementAge (uint256)
+#   [4] totalGrossDeposited (uint256)
+#   [5] totalFeesPaid (uint256)
+#   [6] totalNetToFund (uint256)
+#   [7] totalBalance (uint256)
+#   [8] availableBalance (uint256)
+#   [9] totalInvested (uint256)
+#  [10] retirementStarted (bool)
+#
+# La versión anterior tenía la ABI incorrecta (outputs genéricos sin nombres)
+# y además llamaba a getBalances() por separado, generando doble lectura
+# con posible inconsistencia si el estado cambia entre llamadas.
 FUND_ABI = [
-    {"name": "getFundInfo", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [
-         {"type": "address"}, {"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"},
-         {"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"},
-         {"type": "uint256"}, {"type": "uint256"}, {"type": "bool"},
-     ]},
-    {"name": "getBalances", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [
-         {"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"},
-     ]},
-    {"name": "getAutoWithdrawalInfo", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [
-         {"type": "bool"}, {"type": "uint256"}, {"type": "uint256"},
-         {"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"},
-     ]},
-    {"name": "getTimelockInfo", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [
-         {"type": "uint256"}, {"type": "uint256"}, {"type": "bool"},
-     ]},
+    {
+        "name": "getFundInfo",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "owner",               "type": "address"},
+            {"name": "principal",           "type": "uint256"},
+            {"name": "monthlyDeposit",      "type": "uint256"},
+            {"name": "retirementAge",       "type": "uint256"},
+            {"name": "totalGrossDeposited", "type": "uint256"},
+            {"name": "totalFeesPaid",       "type": "uint256"},
+            {"name": "totalNetToFund",      "type": "uint256"},
+            {"name": "totalBalance",        "type": "uint256"},
+            {"name": "availableBalance",    "type": "uint256"},
+            {"name": "totalInvested",       "type": "uint256"},
+            {"name": "retirementStarted",   "type": "bool"},
+        ],
+    },
+    # getBalances() se mantiene en ABI por si se necesita en otros contextos,
+    # pero get_fund_info() ya no lo llama por separado.
+    {
+        "name": "getBalances",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "totalBalance",     "type": "uint256"},
+            {"name": "availableBalance", "type": "uint256"},
+            {"name": "totalInvested",    "type": "uint256"},
+        ],
+    },
+    {
+        "name": "getAutoWithdrawalInfo",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "enabled",          "type": "bool"},
+            {"name": "amount",           "type": "uint256"},
+            {"name": "intervalSeconds",  "type": "uint256"},
+            {"name": "nextTime",         "type": "uint256"},
+            {"name": "executionCount",   "type": "uint256"},
+            {"name": "lastTime",         "type": "uint256"},
+        ],
+    },
+    {
+        "name": "getTimelockInfo",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "timelockEnd",  "type": "uint256"},
+            {"name": "remaining",    "type": "uint256"},
+            {"name": "isUnlocked",   "type": "bool"},
+        ],
+    },
 ]
 
 TREASURY_ABI = [
-    {"name": "getTreasuryStats", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [{"components": [
-         {"name": "totalFeesCollectedUSDC",      "type": "uint256"},
-         {"name": "totalFeesCollectedAllTime",    "type": "uint256"},
-         {"name": "totalFundsRegistered",         "type": "uint256"},
-         {"name": "activeFundsCount",             "type": "uint256"},
-         {"name": "totalEarlyRetirementRequests", "type": "uint256"},
-         {"name": "approvedEarlyRetirements",     "type": "uint256"},
-         {"name": "rejectedEarlyRetirements",     "type": "uint256"},
-     ], "type": "tuple"}]},
-    {"name": "getTreasuryBalance", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [{"type": "uint256"}]},
+    {
+        "name": "getTreasuryStats",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "tuple",
+                "components": [
+                    {"name": "totalFeesCollectedUSDC",      "type": "uint256"},
+                    {"name": "totalFeesCollectedAllTime",   "type": "uint256"},
+                    {"name": "totalFundsRegistered",        "type": "uint256"},
+                    {"name": "activeFundsCount",            "type": "uint256"},
+                    {"name": "totalEarlyRetirementRequests","type": "uint256"},
+                    {"name": "approvedEarlyRetirements",    "type": "uint256"},
+                    {"name": "rejectedEarlyRetirements",    "type": "uint256"},
+                ],
+            }
+        ],
+    },
+    {
+        "name": "getTreasuryBalance",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"type": "uint256"}],
+    },
 ]
 
 PROTOCOL_REGISTRY_ABI = [
-    {"name": "getAllProtocols", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [{"type": "address[]"}]},
-    {"name": "getProtocol", "type": "function", "stateMutability": "view",
-     "inputs": [{"name": "_protocolAddress", "type": "address"}],
-     "outputs": [{"components": [
-         {"name": "protocolAddress", "type": "address"},
-         {"name": "name",            "type": "string"},
-         {"name": "apy",             "type": "uint256"},
-         {"name": "isActive",        "type": "bool"},
-         {"name": "totalDeposited",  "type": "uint256"},
-         {"name": "riskLevel",       "type": "uint8"},
-         {"name": "addedTimestamp",  "type": "uint256"},
-         {"name": "lastUpdated",     "type": "uint256"},
-         {"name": "verified",        "type": "bool"},
-     ], "type": "tuple"}]},
-    {"name": "getGlobalStats", "type": "function", "stateMutability": "view",
-     "inputs": [], "outputs": [{"components": [
-         {"name": "totalProtocols",   "type": "uint256"},
-         {"name": "activeProtocols",  "type": "uint256"},
-         {"name": "totalValueLocked", "type": "uint256"},
-         {"name": "averageAPY",       "type": "uint256"},
-     ], "type": "tuple"}]},
+    {
+        "name": "getAllProtocols",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"type": "address[]"}],
+    },
+    {
+        "name": "getProtocol",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "_protocolAddress", "type": "address"}],
+        "outputs": [
+            {
+                "type": "tuple",
+                "components": [
+                    {"name": "protocolAddress", "type": "address"},
+                    {"name": "name",            "type": "string"},
+                    {"name": "category",        "type": "uint8"},   # FIX: campo faltante
+                    {"name": "apy",             "type": "uint256"},
+                    {"name": "isActive",        "type": "bool"},
+                    {"name": "totalDeposited",  "type": "uint256"},
+                    {"name": "riskLevel",       "type": "uint8"},
+                    {"name": "addedTimestamp",  "type": "uint256"},
+                    {"name": "lastUpdated",     "type": "uint256"},
+                    {"name": "verified",        "type": "bool"},
+                ],
+            }
+        ],
+    },
+    {
+        "name": "getGlobalStats",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {
+                "type": "tuple",
+                "components": [
+                    {"name": "totalProtocols",   "type": "uint256"},
+                    {"name": "activeProtocols",  "type": "uint256"},
+                    {"name": "totalValueLocked", "type": "uint256"},
+                    {"name": "averageAPY",       "type": "uint256"},
+                ],
+            }
+        ],
+    },
 ]
 
 ZERO_ADDRESS = "0x" + "0" * 40
+
 
 class BlockchainService:
 
@@ -112,16 +207,30 @@ class BlockchainService:
         )
 
     async def get_fund_info(self, contract_address: str) -> dict:
+        """
+        Lee el estado del fondo en una sola llamada a getFundInfo() +
+        getAutoWithdrawalInfo() en paralelo.
+
+        FIX: la versión anterior llamaba getFundInfo() + getBalances() por
+        separado, ignoraba los balances de getFundInfo y mapeaba índices
+        incorrectos. Ahora se usa getFundInfo como fuente única de verdad
+        para balances y se eliminó la llamada redundante a getBalances().
+        """
         contract = self._fund_contract(contract_address)
-        info, balances, auto = await asyncio.gather(
+
+        info, auto = await asyncio.gather(
             asyncio.to_thread(contract.functions.getFundInfo().call),
-            asyncio.to_thread(contract.functions.getBalances().call),
             asyncio.to_thread(contract.functions.getAutoWithdrawalInfo().call),
         )
+
+        # info indices según el contrato PersonalFund.getFundInfo():
+        # [0] owner, [1] principal, [2] monthlyDeposit, [3] retirementAge,
+        # [4] totalGrossDeposited, [5] totalFeesPaid, [6] totalNetToFund,
+        # [7] totalBalance, [8] availableBalance, [9] totalInvested, [10] retirementStarted
         return {
-            "total_balance":                    _from_usdc(balances[0]),
-            "available_balance":                _from_usdc(balances[1]),
-            "total_invested":                   _from_usdc(balances[2]),
+            "total_balance":                    _from_usdc(info[7]),
+            "available_balance":                _from_usdc(info[8]),
+            "total_invested":                   _from_usdc(info[9]),
             "retirement_started":               info[10],
             "auto_withdrawal_enabled":          auto[0],
             "auto_withdrawal_amount":           _from_usdc(auto[1]) if auto[1] else None,
@@ -156,16 +265,23 @@ class BlockchainService:
         async def _fetch_one(addr: str) -> Optional[dict]:
             try:
                 p = await asyncio.to_thread(registry.functions.getProtocol(addr).call)
+                # FIX: el contrato incluye 'category' (índice 2); la versión anterior
+                # no lo mapeaba porque la ABI no tenía el campo.
+                # Orden del tuple según ProtocolRegistry.getProtocol():
+                # [0] protocolAddress, [1] name, [2] category, [3] apy,
+                # [4] isActive, [5] totalDeposited, [6] riskLevel,
+                # [7] addedTimestamp, [8] lastUpdated, [9] verified
                 return {
                     "protocol_address": addr.lower(),
                     "name":             p[1],
-                    "apy":              p[2] / 100,
-                    "is_active":        p[3],
-                    "total_deposited":  _from_usdc(p[4]),
-                    "risk_level":       p[5],
-                    "added_at":         _ts(p[6]),
-                    "last_updated_at":  _ts(p[7]) if p[7] else None,
-                    "is_verified":      p[8],
+                    "category":         p[2],
+                    "apy":              p[3] / 100,
+                    "is_active":        p[4],
+                    "total_deposited":  _from_usdc(p[5]),
+                    "risk_level":       p[6],
+                    "added_at":         _ts(p[7]),
+                    "last_updated_at":  _ts(p[8]) if p[8] else None,
+                    "is_verified":      p[9],
                 }
             except Exception as exc:
                 logger.warning("Failed to get protocol %s: %s", addr, exc)

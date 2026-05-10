@@ -1,6 +1,9 @@
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, SmallInteger
-from datetime import datetime
+from sqlalchemy import Column, String, DateTime, Integer, Boolean, SmallInteger, ForeignKey, Index
+from datetime import datetime, timezone
 from api.db.base import Base
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 class AnonymousSurvey(Base):
     __tablename__ = "anonymous_surveys"
@@ -13,7 +16,7 @@ class AnonymousSurvey(Base):
     has_retirement_plan      = Column(SmallInteger, nullable=False)
     values_in_retirement     = Column(SmallInteger, nullable=False)
     interested_in_blockchain = Column(SmallInteger, nullable=False)
-    created_at               = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at               = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     def __repr__(self):
         return f"<AnonymousSurvey id={self.id} age={self.age}>"
@@ -22,10 +25,16 @@ class SurveyFollowUp(Base):
     __tablename__ = "survey_followups"
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
-    survey_id       = Column(Integer, nullable=True)
+    survey_id       = Column(
+        Integer,
+        ForeignKey("anonymous_surveys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     wants_more_info = Column(Boolean, nullable=False)
     email           = Column(String(255), nullable=True)
-    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at      = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     def __repr__(self):
         return f"<SurveyFollowUp id={self.id} wants_more_info={self.wants_more_info}>"

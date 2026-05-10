@@ -41,7 +41,7 @@ class FundRepository:
         return list(result.scalars().all())
 
     async def create(self, data: dict) -> PersonalFund:
-        """Create a fund; raises FundAlreadyExists if owner already has one."""
+        """Create a fund; raises FundAlreadyExists if the owner already has one."""
         existing = await self.get_by_owner(data["owner_wallet"])
         if existing:
             raise FundAlreadyExists(data["owner_wallet"])

@@ -1,39 +1,57 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, Field, field_validator
 
 class NonceRequest(BaseModel):
     wallet_address: str
+
     @field_validator("wallet_address")
     @classmethod
-    def validate_wallet(cls, v):
+    def validate_wallet(cls, v: str) -> str:
         from web3 import Web3
         if not Web3.is_address(v):
             raise ValueError("Invalid Ethereum address")
         return Web3.to_checksum_address(v)
 
 class NonceResponse(BaseModel):
-    nonce: str
+    nonce:   str
     message: str
 
 class AuthRequest(BaseModel):
     wallet_address: str
-    signature: str
-    nonce: str
+    signature:      str
+    nonce:          str
 
     @field_validator("wallet_address")
     @classmethod
-    def validate_wallet(cls, v):
+    def validate_wallet(cls, v: str) -> str:
         from web3 import Web3
         if not Web3.is_address(v):
             raise ValueError("Invalid Ethereum address")
         return Web3.to_checksum_address(v)
 
 class AuthResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    wallet_address: str
-    expires_in: int
+    access_token:          str
+    refresh_token:         str          
+    token_type:            str = "bearer"
+    wallet_address:        str
+    expires_in:            int          # segundos hasta expiración del access token
+    refresh_expires_in:    int          # segundos hasta expiración del refresh token
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=10)
+
+class RefreshResponse(BaseModel):
+    access_token:       str
+    refresh_token:      str  
+    token_type:         str = "bearer"
+    expires_in:         int
+    refresh_expires_in: int
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None   # opcional — se invalida si se envía
 
 class SurveySubmit(BaseModel):
     age_range: str = Field(
@@ -57,19 +75,18 @@ class SurveySubmit(BaseModel):
     )
 
 class UserOut(BaseModel):
-    wallet_address: str
-    survey_completed: bool
-    survey_completed_at: Optional[datetime] = None
-    age_range: Optional[str] = None
-    risk_tolerance: Optional[int] = None
-    crypto_experience: Optional[str] = None
-    retirement_goal: Optional[str] = None
-    investment_horizon_years: Optional[int] = None
-    monthly_income_range: Optional[str] = None
-    country: Optional[str] = None
-    first_seen_at: datetime
-    last_active_at: Optional[datetime] = None
-    is_active: bool
+    wallet_address:           str
+    survey_completed:         bool
+    survey_completed_at:      Optional[datetime] = None
+    age_range:                Optional[str]      = None
+    risk_tolerance:           Optional[int]      = None
+    crypto_experience:        Optional[str]      = None
+    retirement_goal:          Optional[str]      = None
+    investment_horizon_years: Optional[int]      = None
+    monthly_income_range:     Optional[str]      = None
+    country:                  Optional[str]      = None
+    first_seen_at:            datetime
+    last_active_at:           Optional[datetime] = None
+    is_active:                bool
 
-    class Config:
-        from_attributes = True  
+    model_config = {"from_attributes": True} 

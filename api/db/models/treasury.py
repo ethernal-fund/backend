@@ -1,10 +1,12 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, Numeric, Text, ForeignKey
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from api.db.base import Base
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 class FeeRecord(Base):
     __tablename__ = "fee_records"
@@ -12,8 +14,13 @@ class FeeRecord(Base):
     fund_address    = Column(String(42), ForeignKey("personal_funds.contract_address"), primary_key=True)
     total_fees_paid = Column(Numeric(20, 6), default=0)
     fee_count       = Column(Integer, default=0)
-    last_fee_at     = Column(DateTime, nullable=True)
-    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    last_fee_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at  = Column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
 
     def __repr__(self):
         return f"<FeeRecord fund={self.fund_address} total={self.total_fees_paid}>"
@@ -27,14 +34,15 @@ class EarlyRetirementRequest(Base):
     reason           = Column(Text, nullable=False)
     status           = Column(String(20), default="pending")    # pending | approved | rejected
 
-    processed        = Column(Boolean, default=False)
-    approved         = Column(Boolean, nullable=True)
-    rejected         = Column(Boolean, nullable=True)
-    processed_at     = Column(DateTime, nullable=True)
-    processed_by     = Column(String(42), nullable=True)        # admin wallet
-    admin_notes      = Column(Text, nullable=True)
+    processed    = Column(Boolean, default=False)
+    approved     = Column(Boolean, nullable=True)
+    rejected     = Column(Boolean, nullable=True)
+    processed_by = Column(String(42), nullable=True)            # admin wallet
+    admin_notes  = Column(Text, nullable=True)
 
-    requested_at     = Column(DateTime, default=datetime.utcnow)
+    requested_at  = Column(DateTime(timezone=True), default=_utcnow)
+    processed_at  = Column(DateTime(timezone=True), nullable=True)
+
     user = relationship("User", back_populates="early_retirement_requests")
 
     def __repr__(self):

@@ -1,9 +1,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from api.db.models.protocol import DeFiProtocol
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 class ProtocolRepository:
     def __init__(self, db: AsyncSession):
@@ -37,11 +40,10 @@ class ProtocolRepository:
             for key, value in data.items():
                 if hasattr(protocol, key):
                     setattr(protocol, key, value)
-            protocol.synced_at = datetime.utcnow()
+            protocol.synced_at = _utcnow()
         else:
             protocol = DeFiProtocol(**data)
             self.db.add(protocol)
-
         await self.db.flush()
         return protocol
 
@@ -49,9 +51,10 @@ class ProtocolRepository:
         protocol = await self.get_by_address(protocol_address)
         if not protocol:
             return None
-        protocol.apy = apy
-        protocol.last_updated_at = datetime.utcnow()
-        protocol.synced_at = datetime.utcnow()
+        now = _utcnow()
+        protocol.apy            = apy
+        protocol.last_updated_at = now
+        protocol.synced_at       = now
         await self.db.flush()
         return protocol
 
@@ -59,8 +62,8 @@ class ProtocolRepository:
         protocol = await self.get_by_address(protocol_address)
         if not protocol:
             return None
-        protocol.is_active = is_active
-        protocol.last_updated_at = datetime.utcnow()
+        protocol.is_active       = is_active
+        protocol.last_updated_at = _utcnow()
         await self.db.flush()
         return protocol
 
@@ -68,8 +71,8 @@ class ProtocolRepository:
         protocol = await self.get_by_address(protocol_address)
         if not protocol:
             return None
-        protocol.is_verified = True
-        protocol.last_updated_at = datetime.utcnow()
+        protocol.is_verified     = True
+        protocol.last_updated_at = _utcnow()
         await self.db.flush()
         return protocol
 
