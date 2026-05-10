@@ -39,22 +39,22 @@ class UserRepository:
             )
             .returning(User)
         )
-
         result  = await self.db.execute(stmt)
-        await self.db.commit()
+        await self.db.flush() 
         user    = result.scalar_one()
         created = abs((user.first_seen_at - user.last_active_at).total_seconds()) < 1
         return user, created
 
     async def touch(self, wallet_address: str) -> None:
+        """FIX: removido commit() — el caller gestiona el ciclo de vida de la transacción."""
         await self.db.execute(
             update(User)
             .where(User.wallet_address == wallet_address.lower())
             .values(last_active_at=datetime.now(timezone.utc))
         )
-        await self.db.commit()
 
     async def update_survey(self, wallet_address: str, data: dict) -> User:
+        """FIX: removido commit() — reemplazado por flush() para mantener atomicidad."""
         now = datetime.now(timezone.utc)
         ALLOWED = {
             "age_range",
@@ -76,7 +76,7 @@ class UserRepository:
             .where(User.wallet_address == wallet_address.lower())
             .values(**safe_data)
         )
-        await self.db.commit()
+        await self.db.flush()  
 
         user = await self.get_by_wallet(wallet_address)
         if user is None:

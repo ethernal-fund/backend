@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db.models.fund import PersonalFund
 from api.core.exceptions import FundAlreadyExists, FundNotFound
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 class FundRepository:
 
@@ -41,7 +44,6 @@ class FundRepository:
         return list(result.scalars().all())
 
     async def create(self, data: dict) -> PersonalFund:
-        """Create a fund; raises FundAlreadyExists if the owner already has one."""
         existing = await self.get_by_owner(data["owner_wallet"])
         if existing:
             raise FundAlreadyExists(data["owner_wallet"])
@@ -68,7 +70,7 @@ class FundRepository:
         for key, value in balances.items():
             if hasattr(fund, key):
                 setattr(fund, key, value)
-        fund.last_synced_at = datetime.utcnow()
+        fund.last_synced_at = _now()  
         await self.db.flush()
         return fund
 
@@ -79,7 +81,7 @@ class FundRepository:
         if not fund:
             return None
         fund.retirement_started    = True
-        fund.retirement_started_at = datetime.utcnow()
+        fund.retirement_started_at = _now()   
         await self.db.flush()
         return fund
 

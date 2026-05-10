@@ -1,7 +1,10 @@
+import asyncio
+import logging
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
-from typing import Optional
 
 from api.db.session import get_db
 from api.db.models.user import User
@@ -13,7 +16,6 @@ from api.core.dependencies import require_admin
 from api.services.user_service import UserService
 from api.services.fund_service import FundService
 from api.services.blockchain_service import BlockchainService
-import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -23,41 +25,61 @@ async def admin_stats(
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    user_service   = UserService(db)
-    fund_service   = FundService(db)
-    survey_repo    = SurveyRepository(db)
-    contact_repo   = ContactRepository(db)
+    user_service  = UserService(db)
+    fund_service  = FundService(db)
+    survey_repo   = SurveyRepository(db)
+    contact_repo  = ContactRepository(db)
 
-    user_stats   = await user_service.get_admin_user_stats()
-    fund_stats   = await fund_service.get_admin_fund_stats()
+    async def _treasury_stats():
+        try:
+            blockchain = BlockchainService()
+            return await blockchain.get_treasury_stats()
+        except Exception as e:
+            logger.error("Treasury stats failed: %s", e)
+            return {"error": str(e)}
 
-    try:
-        blockchain     = BlockchainService()
-        treasury_stats = await blockchain.get_treasury_stats()
-    except Exception as e:
-        logger.error(f"Treasury stats failed: {e}")
-        treasury_stats = {"error": str(e)}
+    (
+        user_stats,
+        fund_stats,
+        treasury_stats,
+        survey_total,
+        survey_wanting_info,
+        survey_averages,
+        survey_by_age,
+        contact_total,
+        contact_new,
+    ) = await asyncio.gather(
+        user_service.get_admin_user_stats(),
+        fund_service.get_admin_fund_stats(),
+        _treasury_stats(),
+        survey_repo.count_total(),
+        survey_repo.count_followups_wanting_info(),
+        survey_repo.get_averages(),
+        survey_repo.count_by_age(),
+        contact_repo.count(),
+        contact_repo.count(status="new"),
+    )
 
     return {
         "users":    user_stats,
         "funds":    fund_stats,
         "treasury": treasury_stats,
         "surveys": {
-            "total":             await survey_repo.count_total(),
-            "wanting_more_info": await survey_repo.count_followups_wanting_info(),
-            "averages":          await survey_repo.get_averages(),
-            "by_age":            await survey_repo.count_by_age(),
+            "total":             survey_total,
+            "wanting_more_info": survey_wanting_info,
+            "averages":          survey_averages,
+            "by_age":            survey_by_age,
         },
         "contacts": {
-            "total": await contact_repo.count(),
-            "new":   await contact_repo.count(status="new"),
+            "total": contact_total,
+            "new":   contact_new,
         },
     }
 
 @router.get("/users")
 async def list_users(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    skip:             int  = Query(0,    ge=0),
+    limit:            int  = Query(100,  ge=1, le=500),
     survey_completed: bool = None,
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -67,7 +89,6 @@ async def list_users(
         query = query.where(User.survey_completed == survey_completed)
     result = await db.execute(query)
     users  = result.scalars().all()
-
     return {
         "users": [
             {
@@ -90,8 +111,8 @@ async def list_users(
 
 @router.get("/funds")
 async def list_funds(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    skip:               int  = Query(0,   ge=0),
+    limit:              int  = Query(100, ge=1, le=500),
     retirement_started: bool = None,
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -101,7 +122,6 @@ async def list_funds(
         query = query.where(PersonalFund.retirement_started == retirement_started)
     result = await db.execute(query)
     funds  = result.scalars().all()
-
     return {
         "funds": [
             {
@@ -113,7 +133,7 @@ async def list_funds(
                 "retirement_started":        f.retirement_started,
                 "early_retirement_approved": f.early_retirement_approved,
                 "is_active":                 f.is_active,
-                "created_at":                f.created_at,
+                "created_at":               f.created_at,
                 "last_synced_at":            f.last_synced_at,
             }
             for f in funds
@@ -123,8 +143,8 @@ async def list_funds(
 
 @router.get("/transactions")
 async def list_transactions(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    skip:       int = Query(0,   ge=0),
+    limit:      int = Query(100, ge=1, le=500),
     event_type: str = None,
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -134,7 +154,6 @@ async def list_transactions(
         query = query.where(Transaction.event_type == event_type)
     result = await db.execute(query)
     txs    = result.scalars().all()
-
     return {
         "transactions": [
             {
@@ -155,16 +174,17 @@ async def list_transactions(
 
 @router.get("/contacts")
 async def list_contacts(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    skip:   int           = Query(0,    ge=0),
+    limit:  int           = Query(100,  ge=1, le=500),
     status: Optional[str] = Query(None, description="new | read | replied"),
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     repo     = ContactRepository(db)
-    messages = await repo.get_all(skip=skip, limit=limit, status=status)
-    total    = await repo.count(status=status)
-
+    messages, total = await asyncio.gather(
+        repo.get_all(skip=skip, limit=limit, status=status),
+        repo.count(status=status),
+    )
     return {
         "messages": [
             {
@@ -197,17 +217,18 @@ async def mark_contact_read(
 
 @router.get("/surveys")
 async def list_surveys(
-    skip: int = Query(0, ge=0),
+    skip:  int = Query(0,   ge=0),
     limit: int = Query(100, ge=1, le=500),
     admin: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    repo     = SurveyRepository(db)
-    surveys  = await repo.get_all(skip=skip, limit=limit)
-    total    = await repo.count_total()
-    averages = await repo.get_averages()
-    by_age   = await repo.count_by_age()
-
+    repo = SurveyRepository(db)
+    surveys, total, averages, by_age = await asyncio.gather(
+        repo.get_all(skip=skip, limit=limit),
+        repo.count_total(),
+        repo.get_averages(),
+        repo.count_by_age(),
+    )
     return {
         "surveys": [
             {
