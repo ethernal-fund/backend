@@ -27,15 +27,7 @@ def _ts(unix: int) -> datetime:
 def _from_usdc(raw: int) -> Decimal:
     return Decimal(raw) / Decimal(10 ** USDC_DECIMALS)
 
-
-# ---------------------------------------------------------------------------
-# ABIs de eventos
-# ---------------------------------------------------------------------------
-
 FUND_EVENTS_ABI = [
-    # FIX: se agrega el evento Initialized del fondo para capturar currentAge,
-    # desiredMonthly, yearsPayments e interestRate que el Factory NO emite en
-    # FundCreated. Sin esto esos campos quedaban en 0 en la DB.
     {"name": "Initialized", "type": "event", "inputs": [
         {"name": "owner",            "type": "address", "indexed": True},
         {"name": "treasury",         "type": "address", "indexed": False},
@@ -87,7 +79,6 @@ FUND_EVENTS_ABI = [
         {"name": "nextExecutionTime", "type": "uint256", "indexed": False},
         {"name": "timestamp",         "type": "uint256", "indexed": False},
     ]},
-    # FIX: eventos faltantes en la versión anterior
     {"name": "ExtraDepositReclaimed", "type": "event", "inputs": [
         {"name": "owner",         "type": "address", "indexed": True},
         {"name": "grossAmount",   "type": "uint256", "indexed": False},
@@ -112,7 +103,7 @@ FUND_EVENTS_ABI = [
     ]},
 ]
 
-FACTORY_EVENTS_ABI = [
+PERSONALFUNDFACTORY_EVENTS_ABI = [
     {"name": "FundCreated", "type": "event", "inputs": [
         {"name": "fundAddress",      "type": "address", "indexed": True},
         {"name": "owner",            "type": "address", "indexed": True},
@@ -152,22 +143,6 @@ TREASURY_FEE_ABI = [
 
 ZERO_ADDRESS = "0x" + "0" * 40
 
-# ---------------------------------------------------------------------------
-# Modelo liviano para persistir el último bloque indexado por fuente.
-# FIX: la versión anterior usaba max(block_number) de transactions, lo que
-# causaba re-indexar todo desde cero si no había transacciones todavía, y
-# perdía FundCreated históricos si el Factory existía antes del primer ciclo.
-# ---------------------------------------------------------------------------
-# Nota: agregar esta tabla via Alembic migration:
-#
-#   CREATE TABLE indexer_state (
-#       source      VARCHAR(64) PRIMARY KEY,
-#       last_block  BIGINT      NOT NULL DEFAULT 0,
-#       updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-#   );
-#
-# Sources: 'factory', 'treasury', 'fund:<address>'
-
 from sqlalchemy import Column, String, BigInteger, DateTime
 from api.db.base import Base
 
@@ -189,10 +164,6 @@ class IndexerService:
         self.protocols = ProtocolRepository(db)
         self.blockchain = BlockchainService()
         self.w3        = self.blockchain.w3
-
-    # ------------------------------------------------------------------
-    # Helpers de infraestructura
-    # ------------------------------------------------------------------
 
     async def _block_number(self) -> int:
         return await asyncio.to_thread(lambda: self.w3.eth.block_number)
@@ -232,15 +203,8 @@ class IndexerService:
             self.db.add(IndexerState(source=source, last_block=block, updated_at=now))
         await self.db.flush()
 
-    # ------------------------------------------------------------------
-    # Ciclo principal
-    # ------------------------------------------------------------------
-
     async def run_cycle(self) -> dict:
         current_block = await self._block_number()
-
-        # FIX: cada fuente recuerda su propio último bloque indexado,
-        # en lugar de compartir el max(block_number) de transactions.
         factory_from  = await self._from_block("factory",  current_block)
         treasury_from = await self._from_block("treasury", current_block)
         funds_from    = await self._from_block("funds",    current_block)
@@ -255,8 +219,6 @@ class IndexerService:
             funds_from, current_block,
         )
 
-        # Factory y Treasury se indexan en paralelo; fund_events después
-        # porque puede necesitar fondos recién creados por factory.
         fund_created, fee_events = await asyncio.gather(
             self._index_fund_created(factory_from, current_block),
             self._index_treasury_events(treasury_from, current_block),
@@ -286,14 +248,10 @@ class IndexerService:
         last = await self._get_last_block(source)
         return max(last + 1, current_block - settings.INDEXER_MAX_BLOCKS_PER_CYCLE)
 
-    # ------------------------------------------------------------------
-    # Factory — FundCreated
-    # ------------------------------------------------------------------
-
     async def _index_fund_created(self, from_block: int, to_block: int) -> int:
         factory = self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.FACTORY_ADDRESS),
-            abi=FACTORY_EVENTS_ABI,
+            address=Web3.to_checksum_address(settings.PERSONALFUNDFACTORY_ADDRESS),
+            abi=PERSONALFUNDFACTORY_EVENTS_ABI,
         )
         try:
             events = await self._get_logs(factory.events.FundCreated, from_block, to_block)
@@ -312,17 +270,13 @@ class IndexerService:
                 owner        = args["owner"].lower()
 
                 await self.users.get_or_create(owner)
-
-                # FIX: FundCreated no incluye currentAge/desiredMonthly/yearsPayments/
-                # interestRate. Se guardan en 0 aquí y se completan al indexar el
-                # evento Initialized del contrato del fondo (ver _index_fund_events).
                 await self.funds.create_from_event({
                     "contract_address":  fund_address,
                     "owner_wallet":      owner,
                     "principal":         _from_usdc(args["principal"]),
                     "monthly_deposit":   _from_usdc(args["monthlyDeposit"]),
                     "retirement_age":    args["retirementAge"],
-                    "current_age":       0,       # se completa con Initialized
+                    "current_age":       0,      
                     "desired_monthly":   Decimal(0),
                     "years_payments":    0,
                     "interest_rate":     0,
@@ -352,28 +306,15 @@ class IndexerService:
                 )
         return indexed
 
-    # ------------------------------------------------------------------
-    # Fondos — eventos por contrato
-    # FIX: la versión anterior hacía 1 llamada RPC por evento por fondo
-    # (O(fondos × eventos)). Ahora se hace 1 llamada por tipo de evento
-    # pasando la lista de addresses como filtro, reduciendo llamadas RPC
-    # de N×6 a 6 (independientemente del número de fondos).
-    # ------------------------------------------------------------------
-
     async def _index_fund_events(self, from_block: int, to_block: int) -> int:
         active_funds = await self.funds.get_all_active(limit=10000)
         if not active_funds:
             return 0
-
-        # Mapa address → fondo para lookup O(1)
         fund_map = {f.contract_address.lower(): f for f in active_funds}
         addresses = [
             Web3.to_checksum_address(f.contract_address) for f in active_funds
         ]
 
-        # Contrato genérico con la ABI de eventos; address no importa para get_logs
-        # cuando se filtra por lista de addresses en el parámetro.
-        # Usamos el primer fondo como base del contrato y sobreescribimos address en get_logs.
         dummy_contract = self.w3.eth.contract(
             address=addresses[0],
             abi=FUND_EVENTS_ABI,
@@ -399,7 +340,6 @@ class IndexerService:
             if not event_obj:
                 continue
             try:
-                # get_logs acepta address como lista para filtrar múltiples contratos
                 all_events = await asyncio.to_thread(
                     event_obj.get_logs,
                     fromBlock=from_block,
@@ -421,9 +361,6 @@ class IndexerService:
                     block = await self._get_block(event["blockNumber"])
                     ts    = _ts(block["timestamp"])
                     tx_hash = event["transactionHash"].hex().lower()
-
-                    # FIX: evento Initialized del fondo — completa los campos
-                    # que FundCreated del Factory no incluye.
                     if event_type == "initialized_fund":
                         await self._complete_fund_from_initialized(fund, event, ts)
                         indexed += 1
@@ -574,13 +511,6 @@ class IndexerService:
                 fund.contract_address, exc,
             )
 
-    # ------------------------------------------------------------------
-    # Treasury — FeeReceived + early retirement events
-    # FIX: la versión anterior no indexaba EarlyRetirementRequested /
-    # Approved / Rejected, por lo que process_request() nunca encontraba
-    # registros (buscaba por tx_hash que nunca se guardaba).
-    # ------------------------------------------------------------------
-
     async def _index_treasury_events(self, from_block: int, to_block: int) -> int:
         treasury = self.w3.eth.contract(
             address=Web3.to_checksum_address(settings.TREASURY_ADDRESS),
@@ -619,8 +549,6 @@ class IndexerService:
                 fund = await self.funds.get_by_contract(fund_addr)
                 if fund:
                     block = await self._get_block(event["blockNumber"])
-                    # Suffix con log_index para evitar colisión si hay múltiples
-                    # fees en el mismo tx (aunque el contrato no lo hace normalmente)
                     tx_id = f"{event['transactionHash'].hex().lower()}_fee_{event['logIndex']}"
                     await self.txs.create({
                         "id":              tx_id,
@@ -638,10 +566,6 @@ class IndexerService:
         return indexed
 
     async def _process_retirement_requested(self, events: list) -> int:
-        """
-        FIX: crea el registro EarlyRetirementRequest en la DB con el tx_hash
-        como id, de modo que process_request() pueda encontrarlo por ese campo.
-        """
         indexed = 0
         for event in events:
             try:

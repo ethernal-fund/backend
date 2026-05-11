@@ -62,10 +62,10 @@ class Settings(BaseSettings):
     RPC_URL:  str
     CHAIN_ID: int = 421614   # Arbitrum Sepolia por defecto
 
-    FACTORY_ADDRESS:           str
+    PERSONALFUNDFACTORY_ADDRESS:           str
     TREASURY_ADDRESS:          str
     USDC_ADDRESS:              str
-    PROTOCOL_REGISTRY_ADDRESS: str
+    PROTOCOLREGISTRY_ADDRESS: str
 
     ADMIN_WALLET:   str
     ADMIN_WALLETS:  Optional[str] = None  

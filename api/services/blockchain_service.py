@@ -16,22 +16,6 @@ def _from_usdc(raw: int) -> Decimal:
 def _ts(unix: int) -> datetime:
     return datetime.fromtimestamp(unix, tz=timezone.utc)
 
-# FIX #1: getFundInfo retorna 11 valores en este orden (según el contrato):
-#   [0] owner (address)
-#   [1] principal (uint256)
-#   [2] monthlyDeposit (uint256)
-#   [3] retirementAge (uint256)
-#   [4] totalGrossDeposited (uint256)
-#   [5] totalFeesPaid (uint256)
-#   [6] totalNetToFund (uint256)
-#   [7] totalBalance (uint256)
-#   [8] availableBalance (uint256)
-#   [9] totalInvested (uint256)
-#  [10] retirementStarted (bool)
-#
-# La versión anterior tenía la ABI incorrecta (outputs genéricos sin nombres)
-# y además llamaba a getBalances() por separado, generando doble lectura
-# con posible inconsistencia si el estado cambia entre llamadas.
 FUND_ABI = [
     {
         "name": "getFundInfo",
@@ -52,8 +36,6 @@ FUND_ABI = [
             {"name": "retirementStarted",   "type": "bool"},
         ],
     },
-    # getBalances() se mantiene en ABI por si se necesita en otros contextos,
-    # pero get_fund_info() ya no lo llama por separado.
     {
         "name": "getBalances",
         "type": "function",
@@ -122,7 +104,7 @@ TREASURY_ABI = [
     },
 ]
 
-PROTOCOL_REGISTRY_ABI = [
+PROTOCOLREGISTRY_ABI = [
     {
         "name": "getAllProtocols",
         "type": "function",
@@ -141,7 +123,7 @@ PROTOCOL_REGISTRY_ABI = [
                 "components": [
                     {"name": "protocolAddress", "type": "address"},
                     {"name": "name",            "type": "string"},
-                    {"name": "category",        "type": "uint8"},   # FIX: campo faltante
+                    {"name": "category",        "type": "uint8"},  
                     {"name": "apy",             "type": "uint256"},
                     {"name": "isActive",        "type": "bool"},
                     {"name": "totalDeposited",  "type": "uint256"},
@@ -174,7 +156,6 @@ PROTOCOL_REGISTRY_ABI = [
 
 ZERO_ADDRESS = "0x" + "0" * 40
 
-
 class BlockchainService:
 
     def __init__(self):
@@ -202,8 +183,8 @@ class BlockchainService:
 
     def _registry_contract(self):
         return self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.PROTOCOL_REGISTRY_ADDRESS),
-            abi=PROTOCOL_REGISTRY_ABI,
+            address=Web3.to_checksum_address(settings.PROTOCOLREGISTRY_ADDRESS),
+            abi=PROTOCOLREGISTRY_ABI,
         )
 
     async def get_fund_info(self, contract_address: str) -> dict:
@@ -223,10 +204,6 @@ class BlockchainService:
             asyncio.to_thread(contract.functions.getAutoWithdrawalInfo().call),
         )
 
-        # info indices según el contrato PersonalFund.getFundInfo():
-        # [0] owner, [1] principal, [2] monthlyDeposit, [3] retirementAge,
-        # [4] totalGrossDeposited, [5] totalFeesPaid, [6] totalNetToFund,
-        # [7] totalBalance, [8] availableBalance, [9] totalInvested, [10] retirementStarted
         return {
             "total_balance":                    _from_usdc(info[7]),
             "available_balance":                _from_usdc(info[8]),
@@ -261,16 +238,9 @@ class BlockchainService:
         registry  = self._registry_contract()
         addresses = await asyncio.to_thread(registry.functions.getAllProtocols().call)
         valid_addresses = [a for a in addresses if a != ZERO_ADDRESS]
-
         async def _fetch_one(addr: str) -> Optional[dict]:
             try:
                 p = await asyncio.to_thread(registry.functions.getProtocol(addr).call)
-                # FIX: el contrato incluye 'category' (índice 2); la versión anterior
-                # no lo mapeaba porque la ABI no tenía el campo.
-                # Orden del tuple según ProtocolRegistry.getProtocol():
-                # [0] protocolAddress, [1] name, [2] category, [3] apy,
-                # [4] isActive, [5] totalDeposited, [6] riskLevel,
-                # [7] addedTimestamp, [8] lastUpdated, [9] verified
                 return {
                     "protocol_address": addr.lower(),
                     "name":             p[1],
