@@ -17,7 +17,7 @@ from api.core.exceptions import (
 from api.core.redis import close_redis, get_redis
 from api.db.base import Base
 from api.db.session import close_db, engine
-from api.v1.routers import admin, contact, funds, protocols, survey, treasury, users
+from api.v1.routers import admin, contact, funds, protocols, survey, treasury, users, faucet
 
 def _configure_logging() -> None:
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
@@ -112,7 +112,7 @@ app.include_router(protocols.router, prefix=API_PREFIX)
 app.include_router(admin.router,     prefix=API_PREFIX)
 app.include_router(contact.router,   prefix=API_PREFIX)
 app.include_router(survey.router,    prefix=API_PREFIX)
-
+app.include_router(faucet.router,    prefix=API_PREFIX)
 @app.get("/health")
 async def health():
     return {

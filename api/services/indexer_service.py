@@ -174,8 +174,8 @@ class IndexerService:
     async def _get_logs(self, event_obj, from_block: int, to_block: int) -> list:
         return await asyncio.to_thread(
             event_obj.get_logs,
-            fromBlock=from_block,
-            toBlock=to_block,
+            from_block=from_block,
+            to_block=to_block,
         )
 
     async def _get_last_block(self, source: str) -> int:
@@ -342,8 +342,8 @@ class IndexerService:
             try:
                 all_events = await asyncio.to_thread(
                     event_obj.get_logs,
-                    fromBlock=from_block,
-                    toBlock=to_block,
+                    from_block=from_block,
+                    to_block=to_block,
                     address=addresses,
                 )
             except Exception as exc:
