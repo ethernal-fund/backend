@@ -12,6 +12,7 @@ class FaucetProxyRequest(BaseModel):
     address:   str
     chainId:   int = 421614
     faucetUrl: str  # sent by the frontend client
+    network:   str  # sent by the frontend client
 
 
 class FaucetProxyResponse(BaseModel):
@@ -22,6 +23,8 @@ class FaucetProxyResponse(BaseModel):
     amount:       float | None = None
     eth_amount:   float | None = None
     balance:      float | None = None
+    network:      str | None = None
+    wait_time:    int | None = None
 
 
 @router.post("/faucet/proxy", response_model=FaucetProxyResponse)
@@ -33,11 +36,11 @@ async def faucet_proxy(body: FaucetProxyRequest) -> FaucetProxyResponse:
     """
     target_url = f"{body.faucetUrl.rstrip('/')}/faucet"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.post(
                 target_url,
-                json={"address": body.address},
+                json={"address": body.address, "network": body.network},
             )
             resp.raise_for_status()
             data = resp.json()
