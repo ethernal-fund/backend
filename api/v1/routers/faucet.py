@@ -7,13 +7,11 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-
 class FaucetProxyRequest(BaseModel):
     address:   str
     chainId:   int = 421614
     faucetUrl: str  # sent by the frontend client
     network:   str  # sent by the frontend client
-
 
 class FaucetProxyResponse(BaseModel):
     success:      bool
@@ -26,8 +24,7 @@ class FaucetProxyResponse(BaseModel):
     network:      str | None = None
     wait_time:    int | None = None
 
-
-@router.post("/faucet/proxy", response_model=FaucetProxyResponse)
+@router.post("/proxy", response_model=FaucetProxyResponse)
 async def faucet_proxy(body: FaucetProxyRequest) -> FaucetProxyResponse:
     """
     CORS proxy: forwards the faucet request from the browser to the faucet server.
