@@ -17,7 +17,9 @@ from api.core.exceptions import (
 from api.core.redis import close_redis, get_redis
 from api.db.base import Base
 from api.db.session import close_db, engine
-from api.v1.routers import api_router   # ← Importamos el router central
+
+# Importamos el router central
+from api.v1.routers.routers import api_router
 
 def _configure_logging() -> None:
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
@@ -61,32 +63,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.DEBUG:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created/verified (DEBUG mode)")
+        logger.info("✅ Database tables created/verified")
 
-    # Health checks
     try:
         redis = await get_redis()
         await redis.ping()
-        logger.info("✅ Redis connection OK")
+        logger.info("✅ Redis OK")
     except Exception as e:
         logger.error("Redis unavailable: %s", e)
         if settings.ENVIRONMENT == "production":
-            raise RuntimeError("Redis is required in production") from e
+            raise RuntimeError("Redis required in production") from e
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        logger.info("✅ Database connection OK")
+        logger.info("✅ Database OK")
     except Exception as e:
         logger.critical("Database unavailable: %s", e)
         raise
 
-    logger.info("✅ Application startup completed successfully")
+    logger.info("✅ Application started successfully")
     yield
 
     logger.info("Shutting down...")
     await close_redis()
     await close_db()
-    logger.info("Shutdown completed")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -94,10 +94,8 @@ app = FastAPI(
     docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
     lifespan=lifespan,
-    openapi_url="/openapi.json",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -106,15 +104,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Exception handlers
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# Main API routes
+# Registrar todos los endpoints
 API_PREFIX = "/api/v1"
 app.include_router(api_router, prefix=API_PREFIX)
 
-# Health checks
 @app.get("/health")
 async def health():
     return {
@@ -131,9 +127,4 @@ async def root():
         "version":     settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         "health":      "/health",
-        "docs":        "/docs" if settings.ENVIRONMENT != "production" else None,
-        "api":         f"{API_PREFIX}/",
     }
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api.main:app", host=settings.API_HOST, port=settings.API_PORT, reload=True)
