@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,15 +58,33 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int  = 100
     RATE_LIMIT_WINDOW:   int  = 60
 
-    # Blockchain
+    # BLOCKCHAIN - MULTICHAIN 
     RPC_URL:  str
-    CHAIN_ID: int = 421614   # Arbitrum Sepolia por defecto
+    CHAIN_ID: int = 421614   # Default: Arbitrum Sepolia
 
-    PERSONALFUNDFACTORY_ADDRESS:           str
-    TREASURY_ADDRESS:          str
-    USDC_ADDRESS:              str
-    PROTOCOLREGISTRY_ADDRESS: str
+    # Configuración de contratos por chain (nueva forma recomendada)
+    CONTRACT_ADDRESSES: Dict[int, Dict[str, str]] = {
+        421614: {   # Arbitrum Sepolia
+            "PERSONALFUNDFACTORY_ADDRESS": "",
+            "PROTOCOLREGISTRY_ADDRESS": "",
+            "TREASURY_ADDRESS": "",
+            "USDC_ADDRESS": "0x62F7FB943348d9e3e238b7043278B6895428E4d9",  # MockUSDC
+        },
+        11155111: { # Ethereum Sepolia
+            "PERSONALFUNDFACTORY_ADDRESS": "",
+            "PROTOCOLREGISTRY_ADDRESS": "",
+            "TREASURY_ADDRESS": "",
+            "USDC_ADDRESS": "",
+        },
+    }
 
+    # Variables legacy (para backward compatibility)
+    PERSONALFUNDFACTORY_ADDRESS: str = ""
+    PROTOCOLREGISTRY_ADDRESS:    str = ""
+    TREASURY_ADDRESS:            str = ""
+    USDC_ADDRESS:                str = ""
+
+    # Admin
     ADMIN_WALLET:   str
     ADMIN_WALLETS:  Optional[str] = None  
     ADMIN_API_KEY:  str
@@ -80,7 +98,6 @@ class Settings(BaseSettings):
         return v
 
     def get_admin_wallets(self) -> Set[str]:
-        """Devuelve el set completo de wallets admin en lowercase."""
         wallets = {self.ADMIN_WALLET.lower()}
         if self.ADMIN_WALLETS:
             for w in self.ADMIN_WALLETS.split(","):
@@ -89,6 +106,23 @@ class Settings(BaseSettings):
                     wallets.add(w)
         return wallets
 
+    # HELPERS MULTICHAIN
+    def get_contract_address(self, contract_name: str, chain_id: Optional[int] = None) -> str:
+        """Obtiene dirección de contrato según chain"""
+        if chain_id is None:
+            chain_id = self.CHAIN_ID
+
+        # Prioridad 1: Configuración por chain
+        chain_config = self.CONTRACT_ADDRESSES.get(chain_id)
+        if chain_config and contract_name in chain_config:
+            addr = chain_config[contract_name]
+            if addr and addr.startswith("0x"):
+                return addr
+
+        # Prioridad 2: Variable legacy (backward compatibility)
+        return getattr(self, contract_name, "")
+
+    # Auth
     AUTH_MESSAGE: str = (
         "{domain} wants you to sign in with your Ethereum account:\n"
         "{wallet}\n\n"
@@ -103,8 +137,9 @@ class Settings(BaseSettings):
     JWT_SECRET:                str
     JWT_ALGORITHM:             str = "HS256"
     JWT_EXPIRE_MINUTES:        int = 60    
-    JWT_REFRESH_EXPIRE_MINUTES: int = 10080  # 7 días para refresh token
+    JWT_REFRESH_EXPIRE_MINUTES: int = 10080
 
+    # Faucet
     FAUCET_AMOUNT:         float = 10000.0
     FAUCET_COOLDOWN_HOURS: int   = 24
     FAUCET_PRIVATE_KEY:    Optional[str] = None
@@ -124,22 +159,21 @@ class Settings(BaseSettings):
 
     INDEXER_INTERVAL_SECONDS:     int = 30
     INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
+    SENTRY_ENABLED:               bool = False
+    SENTRY_DSN:                   Optional[str] = None
+    SENTRY_TRACES_SAMPLE_RATE:    float = 0.1
 
-    SENTRY_ENABLED:            bool = False
-    SENTRY_DSN:                Optional[str] = None
-    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
     @model_validator(mode="after")
     def validate_cross_field(self) -> "Settings":
         if self.RATE_LIMIT_ENABLED and not self.REDIS_URL:
             raise ValueError("REDIS_URL is required when RATE_LIMIT_ENABLED=True")
+
         if self.ENVIRONMENT == "production":
             if len(self.JWT_SECRET or "") < 32:
                 raise ValueError("JWT_SECRET must be at least 32 characters in production")
             if self.JWT_EXPIRE_MINUTES > 120:
-                raise ValueError(
-                    "JWT_EXPIRE_MINUTES should not exceed 120 in production "
-                    "(reduces exposure window on token compromise)"
-                )
+                raise ValueError("JWT_EXPIRE_MINUTES should not exceed 120 in production")
+
         return self
 
     model_config = SettingsConfigDict(
@@ -148,6 +182,7 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
         env_parse_none_str="",
+        json_encoders={Dict: lambda v: v} 
     )
 
 settings = Settings()
