@@ -1,5 +1,3 @@
-# api/v1/routers/faucet.py
-#
 # CORS proxy: reenvía la request del frontend al mock-usdc server-to-server,
 # evitando problemas de CORS en el browser. También propaga la IP real del
 # usuario para que el rate limiter del mock-usdc opere por usuario, no por
@@ -11,13 +9,11 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-
 class FaucetProxyRequest(BaseModel):
     address:   str
     chainId:   int = 421614
     faucetUrl: str   # enviado por el cliente frontend
     network:   str   # enviado por el cliente frontend
-
 
 class FaucetProxyResponse(BaseModel):
     success:     bool
@@ -30,20 +26,12 @@ class FaucetProxyResponse(BaseModel):
     network:     str | None   = None
     wait_time:   int | None   = None
 
-
 @router.post("/proxy", response_model=FaucetProxyResponse)
 async def faucet_proxy(
     body: FaucetProxyRequest,
     request: Request,
 ) -> FaucetProxyResponse:
-    """
-    Proxy CORS: recibe la solicitud del browser y la reenvía al mock-usdc
-    server-to-server. Propaga la IP real del usuario via X-Forwarded-For
-    para que el rate limiter del faucet opere por usuario y no por IP del backend.
-    """
     target_url = f"{body.faucetUrl.rstrip('/')}/faucet"
-
-    # Extraer IP real del usuario (Render pone la IP en X-Forwarded-For)
     forwarded = request.headers.get("X-Forwarded-For", "")
     client_ip = forwarded.split(",")[0].strip() if forwarded else (
         request.client.host if request.client else "unknown"
