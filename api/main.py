@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -16,9 +17,7 @@ from api.core.exceptions import (
 )
 from api.core.redis import close_redis, get_redis
 from api.db.base import Base
-from api.db.session import close_db, engine
-
-# Importamos el router central
+from api.db.session import close_db, engine, AsyncSessionLocal
 from api.v1.routers.routers import api_router
 
 def _configure_logging() -> None:
@@ -51,6 +50,35 @@ def _configure_logging() -> None:
 _configure_logging()
 logger = logging.getLogger(__name__)
 
+async def _indexer_loop() -> None:
+    """
+    Background task que corre el indexer periódicamente.
+
+    FIX: el indexer nunca se iniciaba automáticamente — solo podía
+    ejecutarse mediante POST /admin/indexer/run. Esto dejaba las tablas
+    transactions, fee_records e indexer_state permanentemente vacías.
+
+    Cada ciclo abre su propia sesión de DB para evitar sesiones de larga
+    duración y conexiones idle en Supabase free tier.
+    CancelledError se re-lanza para permitir shutdown limpio.
+    """
+    logger.info(
+        "Indexer loop started (interval=%ds)", settings.INDEXER_INTERVAL_SECONDS
+    )
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                from api.services.indexer_service import IndexerService
+                indexer = IndexerService(db)
+                result  = await indexer.run_cycle()
+                logger.info("Indexer cycle: %s", result)
+        except asyncio.CancelledError:
+            raise   # re-lanzar para shutdown limpio
+        except Exception as exc:
+            logger.error("Indexer cycle failed: %s", exc, exc_info=True)
+
+        await asyncio.sleep(settings.INDEXER_INTERVAL_SECONDS)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(
@@ -59,12 +87,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.APP_VERSION,
         settings.ENVIRONMENT,
     )
-
     if settings.DEBUG:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("✅ Database tables created/verified")
-
     try:
         redis = await get_redis()
         await redis.ping()
@@ -73,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error("Redis unavailable: %s", e)
         if settings.ENVIRONMENT == "production":
             raise RuntimeError("Redis required in production") from e
+
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -81,17 +108,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.critical("Database unavailable: %s", e)
         raise
 
+    indexer_task = asyncio.create_task(_indexer_loop())
+    logger.info("✅ Indexer background task started")
     logger.info("✅ Application started successfully")
     yield
-
     logger.info("Shutting down...")
+    indexer_task.cancel()
+    try:
+        await indexer_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Indexer task stopped")
+
     await close_redis()
     await close_db()
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    docs_url="/docs"  if settings.ENVIRONMENT != "production" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
     lifespan=lifespan,
 )
@@ -107,7 +142,6 @@ app.add_middleware(
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# Registrar todos los endpoints
 API_PREFIX = "/api/v1"
 app.include_router(api_router, prefix=API_PREFIX)
 

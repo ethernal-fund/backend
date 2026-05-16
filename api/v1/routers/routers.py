@@ -1,5 +1,11 @@
 """
-Router aggregator - Centraliza todos los routers
+Router aggregator — centraliza todos los routers.
+Cada router se encarga de una parte específica de la API, como usuarios, 
+fondos, tesorería, protocolos, administración, contacto, encuestas y faucet. 
+Al incluir cada router en el `api_router`, se organiza la estructura de la API 
+de manera modular y fácil de mantener. 
+Esto permite que cada sección de la API pueda ser desarrollada y actualizada de forma independiente 
+sin afectar a las demás partes.
 """
 
 from fastapi import APIRouter
@@ -15,25 +21,13 @@ from . import (
     faucet,
 )
 
-# Router principal
 api_router = APIRouter()
 
-# Incluir todos los routers con su prefijo correcto
-api_router.include_router(users.router,     prefix="/users")
-api_router.include_router(funds.router,     prefix="/funds")
-api_router.include_router(treasury.router,  prefix="/treasury")
-api_router.include_router(protocols.router, prefix="/protocols")
-api_router.include_router(admin.router,     prefix="/admin")
-api_router.include_router(contact.router,   prefix="/contact")
-api_router.include_router(survey.router,    prefix="/surveys")
-api_router.include_router(faucet.router,    prefix="/faucet")   
-
-# Para compatibilidad (opcional)
-users_router = users.router
-funds_router = funds.router
-treasury_router = treasury.router
-protocols_router = protocols.router
-admin_router = admin.router
-contact_router = contact.router
-survey_router = survey.router
-faucet_router = faucet.router
+api_router.include_router(users.router)
+api_router.include_router(funds.router)
+api_router.include_router(treasury.router)
+api_router.include_router(protocols.router)
+api_router.include_router(admin.router)
+api_router.include_router(contact.router)
+api_router.include_router(survey.router)
+api_router.include_router(faucet.router, prefix="/faucet")
