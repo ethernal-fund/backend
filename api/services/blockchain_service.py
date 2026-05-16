@@ -53,12 +53,12 @@ FUND_ABI = [
         "stateMutability": "view",
         "inputs": [],
         "outputs": [
-            {"name": "enabled",          "type": "bool"},
-            {"name": "amount",           "type": "uint256"},
-            {"name": "intervalSeconds",  "type": "uint256"},
-            {"name": "nextTime",         "type": "uint256"},
-            {"name": "executionCount",   "type": "uint256"},
-            {"name": "lastTime",         "type": "uint256"},
+            {"name": "enabled",         "type": "bool"},
+            {"name": "amount",          "type": "uint256"},
+            {"name": "intervalSeconds", "type": "uint256"},
+            {"name": "nextTime",        "type": "uint256"},
+            {"name": "executionCount",  "type": "uint256"},
+            {"name": "lastTime",        "type": "uint256"},
         ],
     },
     {
@@ -67,9 +67,9 @@ FUND_ABI = [
         "stateMutability": "view",
         "inputs": [],
         "outputs": [
-            {"name": "timelockEnd",  "type": "uint256"},
-            {"name": "remaining",    "type": "uint256"},
-            {"name": "isUnlocked",   "type": "bool"},
+            {"name": "timelockEnd", "type": "uint256"},
+            {"name": "remaining",   "type": "uint256"},
+            {"name": "isUnlocked",  "type": "bool"},
         ],
     },
 ]
@@ -84,13 +84,13 @@ TREASURY_ABI = [
             {
                 "type": "tuple",
                 "components": [
-                    {"name": "totalFeesCollectedUSDC",      "type": "uint256"},
-                    {"name": "totalFeesCollectedAllTime",   "type": "uint256"},
-                    {"name": "totalFundsRegistered",        "type": "uint256"},
-                    {"name": "activeFundsCount",            "type": "uint256"},
-                    {"name": "totalEarlyRetirementRequests","type": "uint256"},
-                    {"name": "approvedEarlyRetirements",    "type": "uint256"},
-                    {"name": "rejectedEarlyRetirements",    "type": "uint256"},
+                    {"name": "totalFeesCollectedUSDC",       "type": "uint256"},
+                    {"name": "totalFeesCollectedAllTime",    "type": "uint256"},
+                    {"name": "totalFundsRegistered",         "type": "uint256"},
+                    {"name": "activeFundsCount",             "type": "uint256"},
+                    {"name": "totalEarlyRetirementRequests", "type": "uint256"},
+                    {"name": "approvedEarlyRetirements",     "type": "uint256"},
+                    {"name": "rejectedEarlyRetirements",     "type": "uint256"},
                 ],
             }
         ],
@@ -123,7 +123,7 @@ PROTOCOLREGISTRY_ABI = [
                 "components": [
                     {"name": "protocolAddress", "type": "address"},
                     {"name": "name",            "type": "string"},
-                    {"name": "category",        "type": "uint8"},  
+                    {"name": "category",        "type": "uint8"},
                     {"name": "apy",             "type": "uint256"},
                     {"name": "isActive",        "type": "bool"},
                     {"name": "totalDeposited",  "type": "uint256"},
@@ -176,26 +176,31 @@ class BlockchainService:
         )
 
     def _treasury_contract(self):
+        address = settings.get_contract_address("TREASURY_ADDRESS")
+        if not address:
+            raise ValueError(
+                "TREASURY_ADDRESS not configured for chain_id=%d" % settings.CHAIN_ID
+            )
         return self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.TREASURY_ADDRESS),
+            address=Web3.to_checksum_address(address),
             abi=TREASURY_ABI,
         )
 
     def _registry_contract(self):
+        address = settings.get_contract_address("PROTOCOLREGISTRY_ADDRESS")
+        if not address:
+            raise ValueError(
+                "PROTOCOLREGISTRY_ADDRESS not configured for chain_id=%d" % settings.CHAIN_ID
+            )
         return self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.PROTOCOLREGISTRY_ADDRESS),
+            address=Web3.to_checksum_address(address),
             abi=PROTOCOLREGISTRY_ABI,
         )
 
     async def get_fund_info(self, contract_address: str) -> dict:
         """
-        Lee el estado del fondo en una sola llamada a getFundInfo() +
-        getAutoWithdrawalInfo() en paralelo.
-
-        FIX: la versión anterior llamaba getFundInfo() + getBalances() por
-        separado, ignoraba los balances de getFundInfo y mapeaba índices
-        incorrectos. Ahora se usa getFundInfo como fuente única de verdad
-        para balances y se eliminó la llamada redundante a getBalances().
+        Lee getFundInfo() + getAutoWithdrawalInfo() en paralelo.
+        getFundInfo es la fuente única de verdad para balances.
         """
         contract = self._fund_contract(contract_address)
 
@@ -238,6 +243,7 @@ class BlockchainService:
         registry  = self._registry_contract()
         addresses = await asyncio.to_thread(registry.functions.getAllProtocols().call)
         valid_addresses = [a for a in addresses if a != ZERO_ADDRESS]
+
         async def _fetch_one(addr: str) -> Optional[dict]:
             try:
                 p = await asyncio.to_thread(registry.functions.getProtocol(addr).call)
@@ -256,7 +262,6 @@ class BlockchainService:
             except Exception as exc:
                 logger.warning("Failed to get protocol %s: %s", addr, exc)
                 return None
-
         results = await asyncio.gather(*(_fetch_one(addr) for addr in valid_addresses))
         return [r for r in results if r is not None]
 

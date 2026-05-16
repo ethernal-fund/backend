@@ -9,6 +9,7 @@ from typing import Optional
 import asyncio
 import logging
 
+from api.db.models.indexer_state import IndexerState   # FIX: importar, no redefinir
 from api.db.repositories.fund_repo import FundRepository
 from api.db.repositories.transaction_repo import TransactionRepository
 from api.db.repositories.treasury_repo import TreasuryRepository
@@ -141,29 +142,32 @@ TREASURY_FEE_ABI = [
     ]},
 ]
 
+# ABI mínimo para leer los campos que FundCreated no emite
+FUND_EXTRA_FIELDS_ABI = [
+    {"name": "currentAge",     "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"type": "uint256"}]},
+    {"name": "desiredMonthly", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"type": "uint256"}]},
+    {"name": "yearsPayments",  "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"type": "uint256"}]},
+    {"name": "interestRate",   "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"type": "uint256"}]},
+    {"name": "timelockPeriod", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"type": "uint256"}]},
+]
+
 ZERO_ADDRESS = "0x" + "0" * 40
-
-from sqlalchemy import Column, String, BigInteger, DateTime
-from api.db.base import Base
-
-class IndexerState(Base):
-    __tablename__ = "indexer_state"
-    source     = Column(String(64), primary_key=True)
-    last_block = Column(BigInteger, nullable=False, default=0)
-    updated_at = Column(DateTime(timezone=True), nullable=False,
-                        default=lambda: datetime.now(timezone.utc))
-
 
 class IndexerService:
     def __init__(self, db: AsyncSession):
-        self.db        = db
-        self.funds     = FundRepository(db)
-        self.txs       = TransactionRepository(db)
-        self.treasury  = TreasuryRepository(db)
-        self.users     = UserRepository(db)
-        self.protocols = ProtocolRepository(db)
+        self.db         = db
+        self.funds      = FundRepository(db)
+        self.txs        = TransactionRepository(db)
+        self.treasury   = TreasuryRepository(db)
+        self.users      = UserRepository(db)
+        self.protocols  = ProtocolRepository(db)
         self.blockchain = BlockchainService()
-        self.w3        = self.blockchain.w3
+        self.w3         = self.blockchain.w3
 
     async def _block_number(self) -> int:
         return await asyncio.to_thread(lambda: self.w3.eth.block_number)
@@ -178,8 +182,14 @@ class IndexerService:
             to_block=to_block,
         )
 
+    async def _safe_get_logs(self, event_obj, from_block: int, to_block: int) -> list:
+        try:
+            return await self._get_logs(event_obj, from_block, to_block)
+        except Exception as exc:
+            logger.error("Error fetching %s: %s", event_obj.event_name, exc)
+            return []
+
     async def _get_last_block(self, source: str) -> int:
-        """Lee el último bloque procesado para una fuente dada."""
         result = await self.db.execute(
             select(IndexerState).where(IndexerState.source == source)
         )
@@ -187,8 +197,7 @@ class IndexerService:
         return state.last_block if state else 0
 
     async def _save_last_block(self, source: str, block: int) -> None:
-        """Persiste el último bloque procesado para una fuente."""
-        now = datetime.now(timezone.utc)
+        now      = datetime.now(timezone.utc)
         existing = await self.db.execute(
             select(IndexerState).where(IndexerState.source == source)
         )
@@ -203,20 +212,27 @@ class IndexerService:
             self.db.add(IndexerState(source=source, last_block=block, updated_at=now))
         await self.db.flush()
 
+    async def _from_block(self, source: str, current_block: int) -> int:
+        last = await self._get_last_block(source)
+        return max(last + 1, current_block - settings.INDEXER_MAX_BLOCKS_PER_CYCLE)
+
     async def run_cycle(self) -> dict:
         current_block = await self._block_number()
-        factory_from  = await self._from_block("factory",  current_block)
-        treasury_from = await self._from_block("treasury", current_block)
-        funds_from    = await self._from_block("funds",    current_block)
+
+        factory_from, treasury_from, funds_from = await asyncio.gather(
+            self._from_block("factory",  current_block),
+            self._from_block("treasury", current_block),
+            self._from_block("funds",    current_block),
+        )
 
         if all(fb > current_block for fb in [factory_from, treasury_from, funds_from]):
             return {"indexed": 0, "message": "Already up to date"}
 
         logger.info(
             "Indexing — factory:%d→%d  treasury:%d→%d  funds:%d→%d",
-            factory_from, current_block,
+            factory_from,  current_block,
             treasury_from, current_block,
-            funds_from, current_block,
+            funds_from,    current_block,
         )
 
         fund_created, fee_events = await asyncio.gather(
@@ -224,11 +240,9 @@ class IndexerService:
             self._index_treasury_events(treasury_from, current_block),
         )
         fund_events = await self._index_fund_events(funds_from, current_block)
-
         await self._save_last_block("factory",  current_block)
         await self._save_last_block("treasury", current_block)
         await self._save_last_block("funds",    current_block)
-
         total = fund_created + fund_events + fee_events
         logger.info("Indexed %d events total", total)
         return {
@@ -239,20 +253,20 @@ class IndexerService:
             "fee_events":   fee_events,
         }
 
-    def _from_block(self, source: str, current_block: int):
-        """Devuelve corrutina; se usa en gather o await."""
-        return self._get_last_block(source).then if False else \
-               self.__from_block_async(source, current_block)
-
-    async def __from_block_async(self, source: str, current_block: int) -> int:
-        last = await self._get_last_block(source)
-        return max(last + 1, current_block - settings.INDEXER_MAX_BLOCKS_PER_CYCLE)
-
     async def _index_fund_created(self, from_block: int, to_block: int) -> int:
+        factory_address = settings.get_contract_address("PERSONALFUNDFACTORY_ADDRESS")
+        if not factory_address:
+            logger.error(
+                "PERSONALFUNDFACTORY_ADDRESS not configured for chain_id=%d — skipping",
+                settings.CHAIN_ID,
+            )
+            return 0
+
         factory = self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.PERSONALFUNDFACTORY_ADDRESS),
+            address=Web3.to_checksum_address(factory_address),
             abi=PERSONALFUNDFACTORY_EVENTS_ABI,
         )
+
         try:
             events = await self._get_logs(factory.events.FundCreated, from_block, to_block)
         except Exception as exc:
@@ -276,7 +290,7 @@ class IndexerService:
                     "principal":         _from_usdc(args["principal"]),
                     "monthly_deposit":   _from_usdc(args["monthlyDeposit"]),
                     "retirement_age":    args["retirementAge"],
-                    "current_age":       0,      
+                    "current_age":       0,
                     "desired_monthly":   Decimal(0),
                     "years_payments":    0,
                     "interest_rate":     0,
@@ -310,7 +324,8 @@ class IndexerService:
         active_funds = await self.funds.get_all_active(limit=10000)
         if not active_funds:
             return 0
-        fund_map = {f.contract_address.lower(): f for f in active_funds}
+
+        fund_map  = {f.contract_address.lower(): f for f in active_funds}
         addresses = [
             Web3.to_checksum_address(f.contract_address) for f in active_funds
         ]
@@ -321,17 +336,17 @@ class IndexerService:
         )
 
         EVENT_MAP = {
-            "Initialized":            "initialized_fund",   # completa campos faltantes
-            "MonthlyDeposited":       "monthly_deposited",
-            "ExtraDeposited":         "extra_deposited",
-            "Withdrawn":              "withdrawn",
-            "RetirementStarted":      "retirement_started",
-            "InvestedInProtocol":     "invested_in_protocol",
-            "AutoWithdrawalExecuted": "auto_withdrawal_executed",
-            "ExtraDepositReclaimed":  "extra_deposit_reclaimed",
-            "MissedMonthRecorded":    "missed_month_recorded",
-            "InvestmentMethodUpdated":"investment_method_updated",
-            "EarlyRetirementApproved":"early_retirement_approved_onchain",
+            "Initialized":             "initialized_fund",        # completa campos faltantes
+            "MonthlyDeposited":        "monthly_deposited",
+            "ExtraDeposited":          "extra_deposited",
+            "Withdrawn":               "withdrawn",
+            "RetirementStarted":       "retirement_started",
+            "InvestedInProtocol":      "invested_in_protocol",
+            "AutoWithdrawalExecuted":  "auto_withdrawal_executed",
+            "ExtraDepositReclaimed":   "extra_deposit_reclaimed",
+            "MissedMonthRecorded":     "missed_month_recorded",
+            "InvestmentMethodUpdated": "investment_method_updated",
+            "EarlyRetirementApproved": "early_retirement_approved_onchain",
         }
 
         indexed = 0
@@ -357,12 +372,13 @@ class IndexerService:
                     if not fund:
                         continue
 
-                    args  = event["args"]
-                    block = await self._get_block(event["blockNumber"])
-                    ts    = _ts(block["timestamp"])
+                    args    = event["args"]
+                    block   = await self._get_block(event["blockNumber"])
+                    ts      = _ts(block["timestamp"])
                     tx_hash = event["transactionHash"].hex().lower()
+
                     if event_type == "initialized_fund":
-                        await self._complete_fund_from_initialized(fund, event, ts)
+                        await self._complete_fund_from_initialized(fund)
                         indexed += 1
                         continue
 
@@ -399,12 +415,9 @@ class IndexerService:
                         tx_data["extra_data"]["execution_number"] = args["executionNumber"]
                     if "missedMonths" in args:
                         tx_data["extra_data"]["missed_months"] = args["missedMonths"]
-
                     await self.txs.create(tx_data)
-
                     if event_type == "retirement_started":
                         await self.funds.mark_retirement_started(fund.contract_address)
-
                     indexed += 1
 
                 except Exception as exc:
@@ -412,88 +425,41 @@ class IndexerService:
                         "Error indexing %s event %s: %s",
                         event_name, event["transactionHash"].hex(), exc,
                     )
-
         return indexed
 
-    async def _complete_fund_from_initialized(self, fund, event: dict, ts: datetime) -> None:
+    async def _complete_fund_from_initialized(self, fund) -> None:
         """
-        FIX: Completa los campos que FundCreated del Factory no emite.
-        El evento Initialized del propio contrato de fondo incluye todos los
-        parámetros de inicialización. Se llama una sola vez por fondo (el
-        evento Initialized solo se emite una vez).
+        Completa los campos que FundCreated del Factory no emite
+        (current_age, desired_monthly, years_payments, interest_rate, timelock_years)
+        llamando directamente al contrato del fondo.
+
+        Solo se ejecuta si current_age == 0 (campos aún no completados).
+
+        FIX: eliminada la primera llamada a currentAge() cuyo resultado se
+        guardaba en `info` y nunca se usaba, causando un RPC call desperdiciado
+        por cada fondo en cada ciclo donde Initialized era detectado.
         """
-        # El evento Initialized no tiene currentAge, desiredMonthly, etc.
-        # directamente, pero podemos leerlos del contrato via getFundInfo.
-        # Alternativa: llamar on-chain solo si los campos siguen en 0.
         if fund.current_age != 0:
             return  # ya completado en un ciclo anterior
 
         try:
-            info = await asyncio.to_thread(
-                self.w3.eth.contract(
-                    address=Web3.to_checksum_address(fund.contract_address),
-                    abi=[{
-                        "name": "getFundInfo", "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [
-                            {"name": "owner",               "type": "address"},
-                            {"name": "principal",           "type": "uint256"},
-                            {"name": "monthlyDeposit",      "type": "uint256"},
-                            {"name": "retirementAge",       "type": "uint256"},
-                            {"name": "totalGrossDeposited", "type": "uint256"},
-                            {"name": "totalFeesPaid",       "type": "uint256"},
-                            {"name": "totalNetToFund",      "type": "uint256"},
-                            {"name": "totalBalance",        "type": "uint256"},
-                            {"name": "availableBalance",    "type": "uint256"},
-                            {"name": "totalInvested",       "type": "uint256"},
-                            {"name": "retirementStarted",   "type": "bool"},
-                        ],
-                    }, {
-                        "name": "currentAge",     "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [{"type": "uint256"}],
-                    }, {
-                        "name": "desiredMonthly", "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [{"type": "uint256"}],
-                    }, {
-                        "name": "yearsPayments",  "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [{"type": "uint256"}],
-                    }, {
-                        "name": "interestRate",   "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [{"type": "uint256"}],
-                    }, {
-                        "name": "timelockPeriod", "type": "function",
-                        "stateMutability": "view", "inputs": [],
-                        "outputs": [{"type": "uint256"}],
-                    }],
-                ).functions.currentAge().call
-            )
             contract = self.w3.eth.contract(
                 address=Web3.to_checksum_address(fund.contract_address),
-                abi=[
-                    {"name": "currentAge",     "type": "function", "stateMutability": "view",
-                     "inputs": [], "outputs": [{"type": "uint256"}]},
-                    {"name": "desiredMonthly", "type": "function", "stateMutability": "view",
-                     "inputs": [], "outputs": [{"type": "uint256"}]},
-                    {"name": "yearsPayments",  "type": "function", "stateMutability": "view",
-                     "inputs": [], "outputs": [{"type": "uint256"}]},
-                    {"name": "interestRate",   "type": "function", "stateMutability": "view",
-                     "inputs": [], "outputs": [{"type": "uint256"}]},
-                    {"name": "timelockPeriod", "type": "function", "stateMutability": "view",
-                     "inputs": [], "outputs": [{"type": "uint256"}]},
-                ],
+                abi=FUND_EXTRA_FIELDS_ABI,
             )
-            current_age, desired_monthly, years_payments, interest_rate, timelock_years = \
-                await asyncio.gather(
-                    asyncio.to_thread(contract.functions.currentAge().call),
-                    asyncio.to_thread(contract.functions.desiredMonthly().call),
-                    asyncio.to_thread(contract.functions.yearsPayments().call),
-                    asyncio.to_thread(contract.functions.interestRate().call),
-                    asyncio.to_thread(contract.functions.timelockPeriod().call),
-                )
+            (
+                current_age,
+                desired_monthly,
+                years_payments,
+                interest_rate,
+                timelock_years,
+            ) = await asyncio.gather(
+                asyncio.to_thread(contract.functions.currentAge().call),
+                asyncio.to_thread(contract.functions.desiredMonthly().call),
+                asyncio.to_thread(contract.functions.yearsPayments().call),
+                asyncio.to_thread(contract.functions.interestRate().call),
+                asyncio.to_thread(contract.functions.timelockPeriod().call),
+            )
             await self.funds.update_balances(fund.contract_address, {
                 "current_age":     current_age,
                 "desired_monthly": _from_usdc(desired_monthly),
@@ -512,8 +478,16 @@ class IndexerService:
             )
 
     async def _index_treasury_events(self, from_block: int, to_block: int) -> int:
+        treasury_address = settings.get_contract_address("TREASURY_ADDRESS")
+        if not treasury_address:
+            logger.error(
+                "TREASURY_ADDRESS not configured for chain_id=%d — skipping treasury indexing",
+                settings.CHAIN_ID,
+            )
+            return 0
+
         treasury = self.w3.eth.contract(
-            address=Web3.to_checksum_address(settings.TREASURY_ADDRESS),
+            address=Web3.to_checksum_address(treasury_address),
             abi=TREASURY_FEE_ABI,
         )
 
@@ -524,19 +498,12 @@ class IndexerService:
             self._safe_get_logs(treasury.events.EarlyRetirementRejected,  from_block, to_block),
         )
 
-        indexed = 0
+        indexed  = 0
         indexed += await self._process_fee_events(fee_events)
         indexed += await self._process_retirement_requested(req_events)
         indexed += await self._process_retirement_approved(apr_events)
         indexed += await self._process_retirement_rejected(rej_events)
         return indexed
-
-    async def _safe_get_logs(self, event_obj, from_block: int, to_block: int) -> list:
-        try:
-            return await self._get_logs(event_obj, from_block, to_block)
-        except Exception as exc:
-            logger.error("Error fetching %s: %s", event_obj.event_name, exc)
-            return []
 
     async def _process_fee_events(self, events: list) -> int:
         indexed = 0
@@ -548,8 +515,8 @@ class IndexerService:
                 await self.treasury.upsert_fee_record(fund_addr, amount)
                 fund = await self.funds.get_by_contract(fund_addr)
                 if fund:
-                    block = await self._get_block(event["blockNumber"])
-                    tx_id = f"{event['transactionHash'].hex().lower()}_fee_{event['logIndex']}"
+                    block  = await self._get_block(event["blockNumber"])
+                    tx_id  = f"{event['transactionHash'].hex().lower()}_fee_{event['logIndex']}"
                     await self.txs.create({
                         "id":              tx_id,
                         "fund_address":    fund_addr,
@@ -574,6 +541,7 @@ class IndexerService:
                 fund_addr = args["fundAddress"].lower()
                 requester = args["requester"].lower()
 
+                # Idempotencia: saltar si ya fue indexado en un ciclo previo.
                 existing = await self.treasury.get_request_by_id(tx_hash)
                 if existing:
                     continue
@@ -596,14 +564,11 @@ class IndexerService:
             try:
                 args      = event["args"]
                 fund_addr = args["fundAddress"].lower()
-                # Buscar el request pendiente por fund_address
-                req = await self.treasury.get_request(fund_addr)
-                if req and req.status == "pending":
-                    await self.treasury.process_request(
-                        tx_hash=req.id,
-                        approved=True,
-                        processed_by=args["approver"].lower(),
-                    )
+                await self.treasury.process_request(
+                    fund_address=fund_addr,
+                    approved=True,
+                    processed_by=args["approver"].lower(),
+                )
                 indexed += 1
             except Exception as exc:
                 logger.error("Error indexing EarlyRetirementApproved: %s", exc)
@@ -615,12 +580,10 @@ class IndexerService:
             try:
                 args      = event["args"]
                 fund_addr = args["fundAddress"].lower()
-                req = await self.treasury.get_request(fund_addr)
-                if req and req.status == "pending":
-                    await self.treasury.process_request(
-                        tx_hash=req.id,
-                        approved=False,
-                    )
+                await self.treasury.process_request(
+                    fund_address=fund_addr,
+                    approved=False,
+                )
                 indexed += 1
             except Exception as exc:
                 logger.error("Error indexing EarlyRetirementRejected: %s", exc)
