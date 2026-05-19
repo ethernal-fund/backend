@@ -1,14 +1,14 @@
 from __future__ import annotations
+from datetime   import datetime, timezone
+from decimal    import Decimal
+from typing     import Optional
 
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Optional
+from sqlalchemy                     import func, select
+from sqlalchemy.ext.asyncio         import AsyncSession
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from api.db.models.fund import PersonalFund
-from api.core.exceptions import FundAlreadyExists, FundNotFound
+from api.db.models.fund  import PersonalFund
+from api.core.exceptions import FundNotFound
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -43,23 +43,24 @@ class FundRepository:
         )
         return list(result.scalars().all())
 
-    async def create(self, data: dict) -> PersonalFund:
-        existing = await self.get_by_owner(data["owner_wallet"])
-        if existing:
-            raise FundAlreadyExists(data["owner_wallet"])
-        fund = PersonalFund(**data)
-        self.db.add(fund)
-        await self.db.flush()
-        return fund
+    async def create_from_event(self, data: dict) -> tuple[PersonalFund, bool]:
+        normalized = {**data, "contract_address": data["contract_address"].lower()}
+        stmt = (
+            pg_insert(PersonalFund)
+            .values(**normalized)
+            .on_conflict_do_nothing(index_elements=["contract_address"])
+            .returning(PersonalFund)
+        )
 
-    async def create_from_event(self, data: dict) -> PersonalFund:
-        existing = await self.get_by_contract(data["contract_address"])
-        if existing:
-            return existing
-        fund = PersonalFund(**data)
-        self.db.add(fund)
+        result = await self.db.execute(stmt)
+        fund   = result.scalar_one_or_none()
+
+        if fund is None:
+            fund = await self.get_by_contract(normalized["contract_address"])
+            return fund, False
+
         await self.db.flush()
-        return fund
+        return fund, True
 
     async def update_balances(
         self, contract_address: str, balances: dict
@@ -70,7 +71,7 @@ class FundRepository:
         for key, value in balances.items():
             if hasattr(fund, key):
                 setattr(fund, key, value)
-        fund.last_synced_at = _now()  
+        fund.last_synced_at = _now()
         await self.db.flush()
         return fund
 
@@ -81,14 +82,12 @@ class FundRepository:
         if not fund:
             return None
         fund.retirement_started    = True
-        fund.retirement_started_at = _now()   
+        fund.retirement_started_at = _now()
         await self.db.flush()
         return fund
 
     async def count_total(self) -> int:
-        result = await self.db.execute(
-            select(func.count(PersonalFund.contract_address))
-        )
+        result = await self.db.execute(select(func.count(PersonalFund.contract_address)))
         return result.scalar() or 0
 
     async def count_active(self) -> int:
@@ -113,7 +112,5 @@ class FundRepository:
         return result.scalar() or Decimal(0)
 
     async def get_total_fees_paid(self) -> Decimal:
-        result = await self.db.execute(
-            select(func.sum(PersonalFund.total_fees_paid))
-        )
+        result = await self.db.execute(select(func.sum(PersonalFund.total_fees_paid)))
         return result.scalar() or Decimal(0)

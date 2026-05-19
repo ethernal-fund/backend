@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi                import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from web3 import Web3
+from web3                   import Web3
 
-from api.db.session import get_db
-from api.db.repositories.fund_repo import FundRepository
-from api.db.repositories.user_repo import UserRepository
-from api.core.dependencies import get_current_wallet
-from api.core.exceptions import FundNotFound
-from api.schemas.funds import FundOut, FundSyncRequest, RegisterFundRequest
+from api.db.session                  import get_db
+from api.db.repositories.fund_repo   import FundRepository
+from api.db.repositories.user_repo   import UserRepository
+from api.core.dependencies           import get_current_wallet
+from api.core.exceptions             import FundNotFound
+from api.schemas.funds               import FundOut, FundSyncRequest, RegisterFundRequest
 from api.services.blockchain_service import BlockchainService
 
 logger = logging.getLogger(__name__)
@@ -30,16 +30,7 @@ async def register_fund(
     contract_address = Web3.to_checksum_address(payload.contract_address)
     fund_repo        = FundRepository(db)
 
-    existing = await fund_repo.get_by_contract(contract_address)
-    if existing:
-        logger.info("Fund already registered: %s", contract_address)
-        return {
-            "success":          True,
-            "created":          False,
-            "contract_address": contract_address,
-        }
-
-    fund = await fund_repo.create_from_event({
+    fund, created = await fund_repo.create_from_event({
         "contract_address":  contract_address.lower(),
         "owner_wallet":      wallet.lower(),
         "principal":         payload.principal,
@@ -48,26 +39,28 @@ async def register_fund(
         "current_age":       payload.current_age,
         "retirement_age":    payload.retirement_age,
         "years_payments":    payload.payment_years,
-        "interest_rate":     payload.interest_rate_bps,   # apy_percent → basis points
-        "timelock_years":    payload.timelock_years,       # derived by schema validator
-        "timelock_end":      payload.timelock_end,         # derived by schema validator
+        "interest_rate":     payload.interest_rate_bps,
+        "timelock_years":    payload.timelock_years,
+        "timelock_end":      payload.timelock_end,
         "selected_protocol": payload.protocol_address.lower(),
     })
 
-    try:
-        user_repo = UserRepository(db)
-        await user_repo.touch(wallet)
-        logger.debug("users.last_active_at refreshed | wallet=%s", wallet[:10])
-    except Exception:
-        logger.exception(
-            "Failed to touch users.last_active_at after fund registration | wallet=%s",
-            wallet[:10],
-        )
+    if not created:
+        logger.info("Fund already registered: %s", contract_address)
+    else:
+        logger.info("Fund registered: %s  owner: %s", contract_address, wallet)
+        try:
+            await UserRepository(db).touch(wallet)
+        except Exception:
+            logger.warning(
+                "Failed to touch users.last_active_at | wallet=%s",
+                wallet[:10],
+                exc_info=True,
+            )
 
-    logger.info("Fund registered: %s  owner: %s", contract_address, wallet)
     return {
         "success":          True,
-        "created":          True,
+        "created":          created,
         "contract_address": fund.contract_address,
         "owner_wallet":     fund.owner_wallet,
     }
@@ -80,7 +73,6 @@ async def sync_fund(
 ):
     if not Web3.is_address(payload.contract_address):
         raise HTTPException(status_code=400, detail="Invalid contract_address")
-
     fund_repo = FundRepository(db)
     fund      = await fund_repo.get_by_owner(wallet)
     if not fund:
@@ -88,7 +80,6 @@ async def sync_fund(
 
     if fund.contract_address.lower() != payload.contract_address.lower():
         raise HTTPException(status_code=403, detail="Not your fund")
-
     try:
         blockchain    = BlockchainService()
         on_chain_data = await blockchain.get_fund_info(fund.contract_address)

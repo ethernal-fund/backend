@@ -52,31 +52,31 @@ logger = logging.getLogger(__name__)
 
 async def _indexer_loop() -> None:
     """
-    Background task que corre el indexer periódicamente.
+    Background task que indexa eventos on-chain periódicamente.
 
-    FIX: el indexer nunca se iniciaba automáticamente — solo podía
-    ejecutarse mediante POST /admin/indexer/run. Esto dejaba las tablas
-    transactions, fee_records e indexer_state permanentemente vacías.
-
-    Cada ciclo abre su propia sesión de DB para evitar sesiones de larga
-    duración y conexiones idle en Supabase free tier.
-    CancelledError se re-lanza para permitir shutdown limpio.
+    Cada ciclo usa get_db_context() para garantizar commit/rollback explícito.
+    Un error en un ciclo loguea y continúa — no detiene el loop.
     """
+    from api.db.session import get_db_context
+    from api.services.indexer_service import IndexerService
+
     logger.info(
-        "Indexer loop started (interval=%ds)", settings.INDEXER_INTERVAL_SECONDS
+        "Indexer loop started (interval=%ds)",
+        settings.INDEXER_INTERVAL_SECONDS,
     )
+
     while True:
         try:
-            async with AsyncSessionLocal() as db:
-                from api.services.indexer_service import IndexerService
-                indexer = IndexerService(db)
-                result  = await indexer.run_cycle()
-                logger.info("Indexer cycle: %s", result)
+            async with get_db_context() as db:
+                result = await IndexerService(db).run_cycle()
+                logger.info("Indexer cycle OK: %s", result)
+
         except asyncio.CancelledError:
-            raise   # re-lanzar para shutdown limpio
+            logger.info("Indexer loop cancelled — shutting down")
+            raise
+
         except Exception as exc:
             logger.error("Indexer cycle failed: %s", exc, exc_info=True)
-
         await asyncio.sleep(settings.INDEXER_INTERVAL_SECONDS)
 
 @asynccontextmanager
