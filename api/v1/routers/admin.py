@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
@@ -255,5 +255,18 @@ async def trigger_indexer(
     db: AsyncSession = Depends(get_db),
 ):
     from api.services.indexer_service import IndexerService
-    indexer = IndexerService(db)
-    return await indexer.run_cycle()
+    from api.main import _indexer_lock  
+ 
+    try:
+        async with _indexer_lock():
+            indexer = IndexerService(db)
+            result  = await indexer.run_cycle()
+    except Exception as exc:
+        logger.error("Manual indexer trigger failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Indexer cycle failed: {exc}")
+    logger.info(
+        "Manual indexer run by admin=%s — indexed=%d",
+        admin[:10],
+        result.get("indexed", 0),
+    )
+    return result

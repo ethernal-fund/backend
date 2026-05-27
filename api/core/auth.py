@@ -1,137 +1,257 @@
 from __future__ import annotations
+
+import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import secrets
-import logging
 import jwt
-
 from eth_account import Account
 from eth_account.messages import encode_defunct
+
 from api.config import settings
 from api.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
-NONCE_KEY_PREFIX    = "nonce:"
-BLACKLIST_KEY_PREFIX = "jwt_blacklist:"
-REFRESH_KEY_PREFIX  = "refresh:"
-
-NONCE_TTL_SECONDS = 300   # 5 min — tiempo razonable para firmar
+# ── Redis key prefixes ────────────────────────────────────────────────────────
+_NONCE_PREFIX     = "nonce:"        # nonce:<wallet_lower>      → nonce (str)
+_REFRESH_PREFIX   = "refresh:"      # refresh:<token>           → wallet (str)
+_BLACKLIST_PREFIX = "jwt_bl:"       # jwt_bl:<jti>              → "1"
+_REFRESH_IDX_PREFIX = "ridx:"       # ridx:<wallet_lower>       → set{token, ...}
 
 async def generate_nonce(wallet_address: str) -> str:
+    """
+    Genera un nonce criptográficamente seguro y lo almacena en Redis.
+    Si ya existía uno previo para esa wallet, lo sobreescribe (un nonce activo
+    por wallet en todo momento).
+    """
     nonce = secrets.token_hex(16)
-    key   = NONCE_KEY_PREFIX + wallet_address.lower()
+    key   = _NONCE_PREFIX + wallet_address.lower()
     redis = await get_redis()
-    await redis.setex(key, NONCE_TTL_SECONDS, nonce)
-    logger.debug("Nonce generated for %s", wallet_address[:10])
+    await redis.setex(key, settings.NONCE_TTL_SECONDS, nonce)
+    logger.debug("Nonce generated | wallet=%s", wallet_address[:10])
     return nonce
 
-async def get_nonce(wallet_address: str) -> Optional[str]:
-    key   = NONCE_KEY_PREFIX + wallet_address.lower()
+async def consume_nonce(wallet_address: str) -> Optional[str]:
+    """
+    Lee y elimina el nonce en una sola operación atómica (GETDEL).
+    Devuelve el nonce si existía, None si ya expiró o fue consumido.
+    Usar siempre éste en lugar de get() + delete() por separado.
+    """
+    key   = _NONCE_PREFIX + wallet_address.lower()
     redis = await get_redis()
-    return await redis.get(key)
+    nonce = await redis.getdel(key)
+    if nonce:
+        logger.debug("Nonce consumed | wallet=%s", wallet_address[:10])
+    return nonce
 
-async def consume_nonce(wallet_address: str) -> None:
-    key   = NONCE_KEY_PREFIX + wallet_address.lower()
-    redis = await get_redis()
-    await redis.delete(key)
+def build_siwe_message(wallet_address: str, nonce: str) -> str:
+    """
+    Construye el mensaje EIP-4361 (Sign-In With Ethereum) exactamente igual
+    que el frontend debe hacerlo.  El formato es deliberadamente estricto:
+    cualquier diferencia de whitespace o salto de línea causa que la firma
+    no matchee.
 
-def build_auth_message(wallet_address: str, nonce: str) -> str:
+    ⚠  Si cambiás este formato, el frontend debe cambiar exactamente igual.
+    """
     issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return settings.AUTH_MESSAGE.format(
-        domain    = settings.APP_DOMAIN or "ethernal.fund",
-        wallet    = wallet_address,
-        nonce     = nonce,
-        uri       = settings.APP_URL,
-        chain_id  = settings.CHAIN_ID,
-        issued_at = issued_at,
+    domain    = settings.APP_DOMAIN or "ethernal.fund"
+    uri       = settings.APP_URL    or "https://ethernal.fund"
+
+    return (
+        f"{domain} wants you to sign in with your Ethereum account:\n"
+        f"{wallet_address}\n"
+        f"\n"
+        f"Sign in to Ethernal Fund\n"
+        f"\n"
+        f"URI: {uri}\n"
+        f"Version: 1\n"
+        f"Chain ID: {settings.CHAIN_ID}\n"
+        f"Nonce: {nonce}\n"
+        f"Issued At: {issued_at}"
     )
 
-def verify_signature(wallet_address: str, signature: str, nonce: str) -> bool:
+# Alias para retrocompatibilidad con cualquier import existente
+build_auth_message = build_siwe_message
+
+def verify_eoa_signature(wallet_address: str, signature: str, message: str) -> bool:
+    """
+    Verifica firma ECDSA estándar (EOA).
+    Soporta tanto el mensaje completo como el hash EIP-191 (eth_sign).
+    """
     try:
-        message      = build_auth_message(wallet_address, nonce)
-        message_hash = encode_defunct(text=message)
-        recovered    = Account.recover_message(message_hash, signature=signature)
+        msg_hash  = encode_defunct(text=message)
+        recovered = Account.recover_message(msg_hash, signature=signature)
         return recovered.lower() == wallet_address.lower()
     except Exception as exc:
-        logger.warning("Signature verification failed: %s", exc)
+        logger.debug("EOA signature check failed: %s", exc)
         return False
 
+def verify_signature(wallet_address: str, signature: str, nonce: str) -> bool:
+    """
+    Punto de entrada principal.  Reconstruye el mensaje SIWE y verifica la firma.
+
+    Flujo:
+      1. Reconstruye el mensaje a partir del nonce (mismo algoritmo que el frontend).
+      2. Verifica firma EOA (ECDSA — el 99 % de los casos).
+
+    Nota sobre EIP-1271 (smart-contract wallets como Safe/Gnosis):
+      La verificación EIP-1271 requiere una llamada RPC al contrato del wallet.
+      Para habilitarla, inyectá un w3 instance y llamá a:
+          contract.functions.isValidSignature(msg_hash, sig).call()
+      Esto se omite aquí para no acoplar auth.py a BlockchainService, pero
+      el esqueleto está preparado para que lo agreguen si lo necesitan.
+    """
+    message = build_siwe_message(wallet_address, nonce)
+    return verify_eoa_signature(wallet_address, signature, message)
+
 def create_access_token(wallet_address: str) -> str:
+    """
+    Crea un JWT de corta duración con:
+      - sub: wallet en minúsculas
+      - jti: ID único para blacklist selectiva
+      - type: "access" para distinguirlo de otros tokens
+      - iat / exp: estándar JWT
+    """
     now    = datetime.now(timezone.utc)
-    expire = now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
-    jti    = secrets.token_hex(16)   # JWT ID — necesario para blacklist
+    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    jti    = secrets.token_hex(16)
+
     payload = {
         "sub":  wallet_address.lower(),
-        "exp":  expire,
-        "iat":  now,
         "jti":  jti,
         "type": "access",
+        "iat":  now,
+        "exp":  expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
-def decode_token(token: str) -> Optional[dict]:
+def decode_access_token(token: str) -> Optional[dict]:
+    """
+    Decodifica y valida un JWT.  Devuelve el payload si es válido, None si no.
+    No lanza excepciones — los errores se loguean a nivel DEBUG.
+    """
     try:
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             settings.JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
+        # Rechazar tokens que no sean de tipo "access" (ej: si alguien
+        # intenta usar un token de otro propósito como access token).
+        if payload.get("type") != "access":
+            logger.debug("Token type mismatch: expected 'access', got '%s'", payload.get("type"))
+            return None
+        return payload
     except jwt.ExpiredSignatureError:
-        logger.debug("Token expired")
+        logger.debug("Access token expired")
         return None
     except jwt.InvalidTokenError as exc:
-        logger.debug("Invalid token: %s", exc)
+        logger.debug("Invalid access token: %s", exc)
         return None
 
-async def create_refresh_token(wallet_address: str) -> str:
-    token = secrets.token_urlsafe(48)
-    key   = REFRESH_KEY_PREFIX + token
-    ttl   = settings.JWT_REFRESH_EXPIRE_MINUTES * 60
+# Alias para retrocompatibilidad
+decode_token = decode_access_token
+
+async def blacklist_token(token: str) -> None:
+    """
+    Agrega el JTI del token a la blacklist con TTL = tiempo restante hasta expiración.
+    Si el token ya expiró, no hace nada (no tiene sentido blacklistear algo vencido).
+    """
+    payload = decode_access_token(token)
+    if not payload:
+        logger.debug("blacklist_token: token inválido o expirado, ignorado")
+        return
+
+    jti = payload.get("jti")
+    if not jti:
+        logger.warning("blacklist_token: token sin JTI, no se puede blacklistear")
+        return
+    exp = payload.get("exp", 0)
+    now = datetime.now(timezone.utc).timestamp()
+    ttl = max(int(exp - now), 1)
     redis = await get_redis()
-    await redis.setex(key, ttl, wallet_address.lower())
-    logger.debug("Refresh token created for %s", wallet_address[:10])
+    await redis.setex(_BLACKLIST_PREFIX + jti, ttl, "1")
+    logger.info(
+        "Access token blacklisted | jti=%s wallet=%s ttl=%ds",
+        jti[:8], payload.get("sub", "?")[:10], ttl,
+    )
+
+async def is_token_blacklisted(payload: dict) -> bool:
+    """Devuelve True si el JTI del token está en la blacklist."""
+    jti = payload.get("jti")
+    if not jti:
+        # Sin JTI no podemos verificar — rechazamos por seguridad.
+        return True
+    redis = await get_redis()
+    return await redis.exists(_BLACKLIST_PREFIX + jti) == 1
+
+async def create_refresh_token(wallet_address: str) -> str:
+    """
+    Crea un refresh token opaco y lo almacena en Redis.
+
+    Almacenamiento:
+      - Clave principal: refresh:<token>  → wallet (para consume)
+      - Índice inverso:  ridx:<wallet>    → set{token, ...} (para revocar todos)
+
+    El índice inverso permite implementar "cerrar sesión en todos los dispositivos"
+    sin necesidad de iterar todas las keys de Redis.
+    """
+    token  = secrets.token_urlsafe(48)
+    wallet = wallet_address.lower()
+    ttl    = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60
+
+    redis = await get_redis()
+    pipe  = redis.pipeline()
+    pipe.setex(_REFRESH_PREFIX + token, ttl, wallet)
+    pipe.sadd(_REFRESH_IDX_PREFIX + wallet, token)
+    pipe.expire(_REFRESH_IDX_PREFIX + wallet, ttl)
+    await pipe.execute()
+    logger.debug("Refresh token created | wallet=%s", wallet[:10])
     return token
 
 async def consume_refresh_token(refresh_token: str) -> Optional[str]:
-    key   = REFRESH_KEY_PREFIX + refresh_token
-    redis = await get_redis()
+    """
+    Lee y elimina el refresh token atómicamente.  Devuelve el wallet si era válido.
+    También limpia el token del índice inverso.
+    """
+    key    = _REFRESH_PREFIX + refresh_token
+    redis  = await get_redis()
     wallet = await redis.getdel(key)
+
     if wallet:
-        logger.debug("Refresh token consumed for %s", wallet[:10])
+        # Limpiar del índice inverso (best-effort, no crítico)
+        try:
+            await redis.srem(_REFRESH_IDX_PREFIX + wallet, refresh_token)
+        except Exception:
+            pass
+        logger.debug("Refresh token consumed | wallet=%s", wallet[:10])
+
     return wallet
 
-async def blacklist_token(token: str) -> None:
-    payload = decode_token(token)
-    if not payload:
-        return  
+async def revoke_all_refresh_tokens(wallet_address: str) -> int:
+    """
+    Revoca todos los refresh tokens activos de un wallet.
+    Útil para "cerrar sesión en todos los dispositivos" o ante sospecha de compromiso.
+    Devuelve la cantidad de tokens revocados.
+    """
+    wallet = wallet_address.lower()
+    redis  = await get_redis()
+    idx_key = _REFRESH_IDX_PREFIX + wallet
+    tokens = await redis.smembers(idx_key)
+    if not tokens:
+        return 0
 
-    jti = payload.get("jti")
-    if not jti:
-        sub = payload.get("sub", "unknown")
-        iat = payload.get("iat", 0)
-        jti = f"legacy_{sub}_{iat}"
+    pipe = redis.pipeline()
+    for token in tokens:
+        pipe.delete(_REFRESH_PREFIX + token)
+    pipe.delete(idx_key)
+    await pipe.execute()
 
-    exp = payload.get("exp", 0)
-    now = datetime.now(timezone.utc).timestamp()
-    ttl = max(int(exp - now), 1)   
-
-    key   = BLACKLIST_KEY_PREFIX + jti
-    redis = await get_redis()
-    await redis.setex(key, ttl, "1")
-    logger.info("Token blacklisted | jti=%s wallet=%s", jti, payload.get("sub", "?")[:10])
-
-
-async def is_token_blacklisted(payload: dict) -> bool:
-    jti = payload.get("jti")
-    if not jti:
-        sub = payload.get("sub", "unknown")
-        iat = payload.get("iat", 0)
-        jti = f"legacy_{sub}_{iat}"
-    key   = BLACKLIST_KEY_PREFIX + jti
-    redis = await get_redis()
-    return await redis.exists(key) == 1
+    logger.info("All refresh tokens revoked | wallet=%s count=%d", wallet[:10], len(tokens))
+    return len(tokens)
 
 def is_admin(wallet: str) -> bool:
-    return wallet.lower() in settings.get_admin_wallets() 
+    """Verifica si el wallet pertenece a la lista de administradores."""
+    return wallet.lower() in settings.get_admin_wallets()

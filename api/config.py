@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional, Set, Dict
+from typing import Dict, List, Optional, Set
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,13 +14,17 @@ class Settings(BaseSettings):
     DEBUG:       bool = False
     LOG_LEVEL:   str = "INFO"
 
-    # URLs base
-    APP_URL:    str = "https://ethernal.fund"
-    APP_DOMAIN: str = "ethernal.fund"
+    APP_URL:     str = "https://ethernal.fund"
+    APP_DOMAIN:  str = "ethernal.fund"
 
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 10000
-    ALLOWED_ORIGINS: List[str] = ["https://ethernal.fund", "https://www.ethernal.fund", "http://localhost:5173"]
+    API_HOST:    str = "0.0.0.0"
+    API_PORT:    int = 10000
+
+    ALLOWED_ORIGINS: List[str] = [
+        "https://ethernal.fund",
+        "https://www.ethernal.fund",
+        "http://localhost:5173",
+    ]
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
@@ -53,40 +57,46 @@ class Settings(BaseSettings):
 
     REDIS_URL: Optional[str] = None
 
-    # Rate Limiting
     RATE_LIMIT_ENABLED:  bool = True
     RATE_LIMIT_REQUESTS: int  = 100
     RATE_LIMIT_WINDOW:   int  = 60
 
-    # BLOCKCHAIN - MULTICHAIN 
     RPC_URL:  str
-    CHAIN_ID: int = 421614  
+    CHAIN_ID: int = 421614
 
-    # Configuración completa de contratos por chain
     CONTRACT_ADDRESSES: Dict[int, Dict[str, str]] = {
-        421614: {  # Arbitrum Sepolia
+        421614: {
             "PERSONALFUNDFACTORY_ADDRESS": "0x078D8C19f52B50B6f11CC41C011dD1f55f6505Bf",
             "PROTOCOLREGISTRY_ADDRESS":    "0x5F44eaed859B3b426D02d5E596C16eDF387abB75",
             "TREASURY_ADDRESS":            "0x9a6397E5D17d8FDB16f3554e9774c764343C311b",
-            "USDC_ADDRESS":                "0x253A19C8A3AFD13c5F54fB0694e356e2d3167AFa",   # MockUSDC
+            "USDC_ADDRESS":                "0x253A19C8A3AFD13c5F54fB0694e356e2d3167AFa",
         },
-        11155111: {  # Ethereum Sepolia
+        11155111: {
             "PERSONALFUNDFACTORY_ADDRESS": "0xD346f0e4253251F80A79C8ebA1EF2fe5DBa6559E",
             "PROTOCOLREGISTRY_ADDRESS":    "0x680CAd1cFdB5460DbA02591A06C23FFE7716091d",
             "TREASURY_ADDRESS":            "0xaF6C9A8D5524f3Da304A981c428BF0FAbAe26d94",
-            "USDC_ADDRESS":                "0xa27dc7dd223a00E89B885CE6968E6379F7146CD3",   # MockUSDC
+            "USDC_ADDRESS":                "0xa27dc7dd223a00E89B885CE6968E6379F7146CD3",
         },
     }
 
-    # Variables legacy (mantengo compatibilidad)
+    # Variables legacy — mantener para compatibilidad con código existente
     PERSONALFUNDFACTORY_ADDRESS: str = ""
     PROTOCOLREGISTRY_ADDRESS:    str = ""
     TREASURY_ADDRESS:            str = ""
     USDC_ADDRESS:                str = ""
 
-    # Admin
+    def get_contract_address(self, contract_name: str, chain_id: Optional[int] = None) -> str:
+        if chain_id is None:
+            chain_id = self.CHAIN_ID
+        chain_config = self.CONTRACT_ADDRESSES.get(chain_id)
+        if chain_config and contract_name in chain_config:
+            addr = chain_config[contract_name]
+            if addr and addr.startswith("0x"):
+                return addr
+        return getattr(self, contract_name, "")
+
     ADMIN_WALLET:   str
-    ADMIN_WALLETS:  Optional[str] = None  
+    ADMIN_WALLETS:  Optional[str] = None
     ADMIN_API_KEY:  str
     API_KEY_HEADER: str = "X-API-Key"
 
@@ -106,22 +116,6 @@ class Settings(BaseSettings):
                     wallets.add(w)
         return wallets
 
-    # MULTICHAIN HELPER 
-    def get_contract_address(self, contract_name: str, chain_id: Optional[int] = None) -> str:
-        """Obtiene la dirección de un contrato según la chain activa"""
-        if chain_id is None:
-            chain_id = self.CHAIN_ID
-
-        chain_config = self.CONTRACT_ADDRESSES.get(chain_id)
-        if chain_config and contract_name in chain_config:
-            addr = chain_config[contract_name]
-            if addr and addr.startswith("0x"):
-                return addr
-
-        # Fallback a variable legacy
-        return getattr(self, contract_name, "")
-
-    # Auth, JWT, Faucet, etc.
     AUTH_MESSAGE: str = (
         "{domain} wants you to sign in with your Ethereum account:\n"
         "{wallet}\n\n"
@@ -133,13 +127,25 @@ class Settings(BaseSettings):
         "Issued At: {issued_at}"
     )
 
-    JWT_SECRET:                str
-    JWT_ALGORITHM:             str = "HS256"
-    JWT_EXPIRE_MINUTES:        int = 60    
-    JWT_REFRESH_EXPIRE_MINUTES: int = 10080
+    JWT_SECRET:    str
+    JWT_ALGORITHM: str = "HS256"
 
-    FAUCET_AMOUNT:         float = 10000.0
-    FAUCET_COOLDOWN_HOURS: int   = 24
+    ACCESS_TOKEN_EXPIRE_MINUTES:  int = 60
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 10_080
+
+    @property
+    def JWT_EXPIRE_MINUTES(self) -> int:
+        return self.ACCESS_TOKEN_EXPIRE_MINUTES
+
+    @property
+    def JWT_REFRESH_EXPIRE_MINUTES(self) -> int:
+        return self.REFRESH_TOKEN_EXPIRE_MINUTES
+
+    # TTL del nonce SIWE en Redis (segundos). 300 = 5 minutos.
+    NONCE_TTL_SECONDS: int = 300
+
+    FAUCET_AMOUNT:         float        = 10_000.0
+    FAUCET_COOLDOWN_HOURS: int          = 24
     FAUCET_PRIVATE_KEY:    Optional[str] = None
 
     @field_validator("FAUCET_PRIVATE_KEY", mode="before")
@@ -154,11 +160,11 @@ class Settings(BaseSettings):
         return v
 
     INDEXER_INTERVAL_SECONDS:     int = 30
-    INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10000
+    INDEXER_MAX_BLOCKS_PER_CYCLE: int = 10_000
 
-    SENTRY_ENABLED:            bool = False
+    SENTRY_ENABLED:            bool          = False
     SENTRY_DSN:                Optional[str] = None
-    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_TRACES_SAMPLE_RATE: float         = 0.1
 
     @model_validator(mode="after")
     def validate_cross_field(self) -> "Settings":
@@ -168,8 +174,6 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT == "production":
             if len(self.JWT_SECRET or "") < 32:
                 raise ValueError("JWT_SECRET must be at least 32 characters in production")
-            if self.JWT_EXPIRE_MINUTES > 120:
-                raise ValueError("JWT_EXPIRE_MINUTES should not exceed 120 in production")
         return self
 
     model_config = SettingsConfigDict(

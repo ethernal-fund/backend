@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from typing import Optional
 from decimal import Decimal
 from datetime import datetime
@@ -18,11 +19,28 @@ class TransactionRepository:
         return result.scalar_one_or_none()
 
     async def create(self, data: dict) -> Transaction:
-        existing = await self.get_by_hash(data["id"])
-        if existing:
-            return existing
-        tx = Transaction(**data)
-        self.db.add(tx)
+        normalized = {
+            **data,
+            "id": data["id"].lower(),
+        }
+        if "fund_address" in normalized and normalized["fund_address"]:
+            normalized["fund_address"] = normalized["fund_address"].lower()
+        if "wallet_address" in normalized and normalized["wallet_address"]:
+            normalized["wallet_address"] = normalized["wallet_address"].lower()
+
+        stmt = (
+            pg_insert(Transaction)
+            .values(**normalized)
+            .on_conflict_do_nothing(index_elements=["id"])
+            .returning(Transaction)
+        )
+
+        result = await self.db.execute(stmt)
+        tx = result.scalar_one_or_none()
+
+        if tx is None:
+            tx = await self.get_by_hash(normalized["id"])
+
         await self.db.flush()
         return tx
 

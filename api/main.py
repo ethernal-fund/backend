@@ -50,13 +50,8 @@ def _configure_logging() -> None:
 _configure_logging()
 logger = logging.getLogger(__name__)
 
-async def _indexer_loop() -> None:
-    """
-    Background task que indexa eventos on-chain periódicamente.
 
-    Cada ciclo usa get_db_context() para garantizar commit/rollback explícito.
-    Un error en un ciclo loguea y continúa — no detiene el loop.
-    """
+async def _indexer_loop() -> None:
     from api.db.session import get_db_context
     from api.services.indexer_service import IndexerService
 
@@ -66,10 +61,25 @@ async def _indexer_loop() -> None:
     )
 
     while True:
+        cycle_start = asyncio.get_event_loop().time()
+
         try:
-            async with get_db_context() as db:
-                result = await IndexerService(db).run_cycle()
-                logger.info("Indexer cycle OK: %s", result)
+            async with _indexer_lock():
+                async with get_db_context() as db:
+                    result = await IndexerService(db).run_cycle()
+
+            indexed = result.get("indexed", 0)
+            if indexed > 0:
+                logger.info(
+                    "Indexer cycle OK — %d events indexed | to_block=%s factory=%s fund=%s fee=%s",
+                    indexed,
+                    result.get("to_block"),
+                    result.get("fund_created"),
+                    result.get("fund_events"),
+                    result.get("fee_events"),
+                )
+            else:
+                logger.debug("Indexer cycle OK — no new events (up to date)")
 
         except asyncio.CancelledError:
             logger.info("Indexer loop cancelled — shutting down")
@@ -77,7 +87,42 @@ async def _indexer_loop() -> None:
 
         except Exception as exc:
             logger.error("Indexer cycle failed: %s", exc, exc_info=True)
-        await asyncio.sleep(settings.INDEXER_INTERVAL_SECONDS)
+
+        elapsed = asyncio.get_event_loop().time() - cycle_start
+        sleep_for = max(0.0, settings.INDEXER_INTERVAL_SECONDS - elapsed)
+
+        if elapsed > settings.INDEXER_INTERVAL_SECONDS:
+            logger.warning(
+                "Indexer cycle took %.1fs — longer than interval (%ds). "
+                "Starting next cycle immediately.",
+                elapsed,
+                settings.INDEXER_INTERVAL_SECONDS,
+            )
+        else:
+            logger.debug(
+                "Indexer cycle took %.1fs — sleeping %.1fs until next cycle",
+                elapsed,
+                sleep_for,
+            )
+
+        await asyncio.sleep(sleep_for)
+
+_INDEXER_ASYNCIO_LOCK = asyncio.Lock()
+
+@asynccontextmanager
+async def _indexer_lock():
+    """
+    Context manager que adquiere el lock global del indexer.
+
+    Si el lock ya está tomado (ej: ciclo manual en progreso), el await aquí
+    bloqueará la corutina hasta que el lock se libere, en lugar de solapar
+    dos ciclos de indexado simultáneos sobre la misma DB.
+
+    El lock se libera automáticamente al salir del bloque `async with`, incluso
+    si hay una excepción (asyncio.Lock garantiza esto).
+    """
+    async with _INDEXER_ASYNCIO_LOCK:
+        yield
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -91,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("✅ Database tables created/verified")
+
     try:
         redis = await get_redis()
         await redis.ping()
@@ -111,7 +157,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     indexer_task = asyncio.create_task(_indexer_loop())
     logger.info("✅ Indexer background task started")
     logger.info("✅ Application started successfully")
+
     yield
+
     logger.info("Shutting down...")
     indexer_task.cancel()
     try:
@@ -122,6 +170,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await close_redis()
     await close_db()
+
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -141,7 +190,6 @@ app.add_middleware(
 
 app.add_exception_handler(EthernalException, ethernal_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
-
 API_PREFIX = "/api/v1"
 app.include_router(api_router, prefix=API_PREFIX)
 

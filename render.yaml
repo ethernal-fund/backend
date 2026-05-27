@@ -87,8 +87,15 @@ services:
         sync: false
       - key: JWT_ALGORITHM
         value: HS256
-      - key: JWT_EXPIRE_MINUTES
-        value: "1440"
+      # Access token: 60 min. Sin límite en código — ajustar libremente.
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      # Refresh token: 7 días.
+      - key: REFRESH_TOKEN_EXPIRE_MINUTES
+        value: "10080"
+      # Nonce SIWE: 5 minutos.
+      - key: NONCE_TTL_SECONDS
+        value: "300"
 
       # ── Faucet ─────────────────────────────────────────────────────────────
       - key: FAUCET_PRIVATE_KEY
