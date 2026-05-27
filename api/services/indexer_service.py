@@ -219,11 +219,11 @@ class IndexerService:
     async def run_cycle(self) -> dict:
         current_block = await self._block_number()
 
-        factory_from, treasury_from, funds_from = await asyncio.gather(
-            self._from_block("factory",  current_block),
-            self._from_block("treasury", current_block),
-            self._from_block("funds",    current_block),
-        )
+        # IMPORTANTE: _from_block hace queries DB — no usar asyncio.gather() aquí.
+        # AsyncSession no permite operaciones concurrentes sobre la misma sesión.
+        factory_from  = await self._from_block("factory",  current_block)
+        treasury_from = await self._from_block("treasury", current_block)
+        funds_from    = await self._from_block("funds",    current_block)
 
         if all(fb > current_block for fb in [factory_from, treasury_from, funds_from]):
             return {"indexed": 0, "message": "Already up to date"}
@@ -235,11 +235,14 @@ class IndexerService:
             funds_from,    current_block,
         )
 
-        fund_created, fee_events = await asyncio.gather(
-            self._index_fund_created(factory_from, current_block),
-            self._index_treasury_events(treasury_from, current_block),
-        )
-        fund_events = await self._index_fund_events(funds_from, current_block)
+        # _index_fund_created y _index_treasury_events sólo hacen llamadas RPC
+        # y escrituras DB que no comparten estado intermedio — se pueden paralelizar
+        # porque internamente cada una abre su propia conexión vía el mismo engine.
+        # Sin embargo, comparten la misma AsyncSession (self.db), por lo que
+        # tampoco se pueden lanzar en gather. Ejecutar en secuencia.
+        fund_created  = await self._index_fund_created(factory_from, current_block)
+        fee_events    = await self._index_treasury_events(treasury_from, current_block)
+        fund_events   = await self._index_fund_events(funds_from, current_block)
         await self._save_last_block("factory",  current_block)
         await self._save_last_block("treasury", current_block)
         await self._save_last_block("funds",    current_block)
