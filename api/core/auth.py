@@ -8,6 +8,7 @@ from typing import Optional
 import jwt
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from fastapi import Request
 
 from api.config import settings
 from api.core.redis import get_redis
@@ -15,10 +16,36 @@ from api.core.redis import get_redis
 logger = logging.getLogger(__name__)
 
 # ── Redis key prefixes ────────────────────────────────────────────────────────
-_NONCE_PREFIX     = "nonce:"        # nonce:<wallet_lower>      → nonce (str)
-_REFRESH_PREFIX   = "refresh:"      # refresh:<token>           → wallet (str)
-_BLACKLIST_PREFIX = "jwt_bl:"       # jwt_bl:<jti>              → "1"
-_REFRESH_IDX_PREFIX = "ridx:"       # ridx:<wallet_lower>       → set{token, ...}
+_NONCE_PREFIX       = "nonce:"        # nonce:<wallet_lower>      → nonce (str)
+_REFRESH_PREFIX     = "refresh:"      # refresh:<token>           → wallet (str)
+_BLACKLIST_PREFIX   = "jwt_bl:"       # jwt_bl:<jti>              → "1"
+_REFRESH_IDX_PREFIX = "ridx:"         # ridx:<wallet_lower>       → set{token, ...}
+
+def extract_token_from_request(request: Request) -> Optional[str]:
+    """
+    Extrae el access token desde la request en el siguiente orden de precedencia:
+
+      1. Cookie HttpOnly  (nombre: settings.ACCESS_TOKEN_COOKIE, default "access_token")
+         — preferida porque es invisible a JavaScript y resiste XSS.
+      2. Header  Authorization: Bearer <token>
+         — necesario para clientes que no soportan cookies (mobile, CLI, otros servicios).
+
+    Devuelve el token crudo como str, o None si no se encuentra en ninguna fuente.
+    No valida ni decodifica el token — esa responsabilidad recae en decode_access_token.
+    """
+    # 1. Cookie HttpOnly
+    cookie_name: str = getattr(settings, "ACCESS_TOKEN_COOKIE", "access_token")
+    token = request.cookies.get(cookie_name)
+    if token:
+        return token
+
+    # 2. Authorization: Bearer <token>
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        raw = auth_header[len("Bearer "):].strip()
+        return raw or None
+
+    return None
 
 async def generate_nonce(wallet_address: str) -> str:
     """
@@ -72,7 +99,6 @@ def build_siwe_message(wallet_address: str, nonce: str) -> str:
         f"Issued At: {issued_at}"
     )
 
-# Alias para retrocompatibilidad con cualquier import existente
 build_auth_message = build_siwe_message
 
 def verify_eoa_signature(wallet_address: str, signature: str, message: str) -> bool:
@@ -141,7 +167,10 @@ def decode_access_token(token: str) -> Optional[dict]:
         # Rechazar tokens que no sean de tipo "access" (ej: si alguien
         # intenta usar un token de otro propósito como access token).
         if payload.get("type") != "access":
-            logger.debug("Token type mismatch: expected 'access', got '%s'", payload.get("type"))
+            logger.debug(
+                "Token type mismatch: expected 'access', got '%s'",
+                payload.get("type"),
+            )
             return None
         return payload
     except jwt.ExpiredSignatureError:
@@ -151,7 +180,6 @@ def decode_access_token(token: str) -> Optional[dict]:
         logger.debug("Invalid access token: %s", exc)
         return None
 
-# Alias para retrocompatibilidad
 decode_token = decode_access_token
 
 async def blacklist_token(token: str) -> None:
@@ -168,6 +196,7 @@ async def blacklist_token(token: str) -> None:
     if not jti:
         logger.warning("blacklist_token: token sin JTI, no se puede blacklistear")
         return
+
     exp = payload.get("exp", 0)
     now = datetime.now(timezone.utc).timestamp()
     ttl = max(int(exp - now), 1)
@@ -236,10 +265,10 @@ async def revoke_all_refresh_tokens(wallet_address: str) -> int:
     Útil para "cerrar sesión en todos los dispositivos" o ante sospecha de compromiso.
     Devuelve la cantidad de tokens revocados.
     """
-    wallet = wallet_address.lower()
-    redis  = await get_redis()
+    wallet  = wallet_address.lower()
+    redis   = await get_redis()
     idx_key = _REFRESH_IDX_PREFIX + wallet
-    tokens = await redis.smembers(idx_key)
+    tokens  = await redis.smembers(idx_key)
     if not tokens:
         return 0
 
@@ -249,9 +278,11 @@ async def revoke_all_refresh_tokens(wallet_address: str) -> int:
     pipe.delete(idx_key)
     await pipe.execute()
 
-    logger.info("All refresh tokens revoked | wallet=%s count=%d", wallet[:10], len(tokens))
+    logger.info(
+        "All refresh tokens revoked | wallet=%s count=%d",
+        wallet[:10], len(tokens),
+    )
     return len(tokens)
 
 def is_admin(wallet: str) -> bool:
-    """Verifica si el wallet pertenece a la lista de administradores."""
     return wallet.lower() in settings.get_admin_wallets()
