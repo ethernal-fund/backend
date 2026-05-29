@@ -5,6 +5,7 @@ FILOSOFÍA:
   La chain es la fuente de verdad. Los modelos aquí son un índice secundario
   que acelera consultas frecuentes (historial de compras, panel de admin) sin
   necesidad de paginación de eventos on-chain en cada request.
+
   Nada en estos modelos puede contradecir el estado del contrato. Si hay
   divergencia, la chain gana. El indexer (verify-purchase background task)
   es el único que escribe en estas tablas.
@@ -29,26 +30,26 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
-    Column,
     DateTime,
     Index,
     Numeric,
     SmallInteger,
     String,
     UniqueConstraint,
-    text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-class Base(DeclarativeBase):
-    pass
+from api.db.base import Base
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # sale_rounds
 # ─────────────────────────────────────────────────────────────────────────────
+
 class SaleRound(Base):
     """
     Snapshot de una ronda de venta de SaleETRF.
@@ -97,8 +98,8 @@ class SaleRound(Base):
     end_time   : Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     # Contadores
-    buyers         : Mapped[int]  = mapped_column(BigInteger,  nullable=False, default=0)
-    is_finalized   : Mapped[bool] = mapped_column(Boolean,     nullable=False, default=False)
+    buyers       : Mapped[int]  = mapped_column(BigInteger, nullable=False, default=0)
+    is_finalized : Mapped[bool] = mapped_column(Boolean,    nullable=False, default=False)
 
     # Auditoría
     synced_at : Mapped[datetime] = mapped_column(
@@ -117,9 +118,11 @@ class SaleRound(Base):
     def __repr__(self) -> str:
         return f"<SaleRound id={self.id} name={self.name!r} status={self.status}>"
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # sale_purchase_events
 # ─────────────────────────────────────────────────────────────────────────────
+
 class SalePurchaseEvent(Base):
     """
     Evento indexado de compra (TokensPurchased) o claim (TokensClaimed).
@@ -135,7 +138,6 @@ class SalePurchaseEvent(Base):
     """
     __tablename__ = "sale_purchase_events"
 
-    # ── PK autoincremental + unique constraint funcional ──────────────────────
     id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True,
@@ -169,8 +171,8 @@ class SalePurchaseEvent(Base):
     )
 
     # Cantidades en unidades on-chain
-    usdc_amount : Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True,  comment="USDC (6 dec), solo en compras")
-    token_amount: Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True,  comment="ETRF (18 dec)")
+    usdc_amount : Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True, comment="USDC (6 dec), solo en compras")
+    token_amount: Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True, comment="ETRF (18 dec)")
 
     # Datos de la tx
     block_number: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -189,10 +191,9 @@ class SalePurchaseEvent(Base):
     )
 
     __table_args__ = (
-        # Una TX solo puede ser del mismo event_type una vez
         UniqueConstraint("tx_hash", "event_type", name="uq_purchase_events_tx_type"),
-        CheckConstraint("event_type IN ('purchase','claim')",    name="ck_purchase_events_type"),
-        CheckConstraint("round_id IS NULL OR round_id BETWEEN 0 AND 2", name="ck_purchase_events_round"),
+        CheckConstraint("event_type IN ('purchase','claim')",               name="ck_purchase_events_type"),
+        CheckConstraint("round_id IS NULL OR round_id BETWEEN 0 AND 2",    name="ck_purchase_events_round"),
         Index("ix_purchase_events_wallet_round", "wallet", "round_id"),
         Index("ix_purchase_events_block",        "block_number"),
     )
@@ -203,9 +204,11 @@ class SalePurchaseEvent(Base):
             f"wallet={self.wallet[:10]}… tx={self.tx_hash[:12]}…>"
         )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # sale_wallets
 # ─────────────────────────────────────────────────────────────────────────────
+
 class SaleWallet(Base):
     """
     Resumen acumulado de participación de un wallet en la sale.
@@ -230,9 +233,9 @@ class SaleWallet(Base):
     )
 
     # Totales acumulados en todas las rondas
-    total_usdc_spent   : Mapped[int] = mapped_column(Numeric(78, 0), nullable=False, default=0, comment="USDC total (6 dec)")
-    total_tokens_bought: Mapped[int] = mapped_column(Numeric(78, 0), nullable=False, default=0, comment="ETRF total (18 dec)")
-    total_tokens_claimed: Mapped[int]= mapped_column(Numeric(78, 0), nullable=False, default=0, comment="ETRF reclamado (18 dec)")
+    total_usdc_spent    : Mapped[int] = mapped_column(Numeric(78, 0), nullable=False, default=0, comment="USDC total (6 dec)")
+    total_tokens_bought : Mapped[int] = mapped_column(Numeric(78, 0), nullable=False, default=0, comment="ETRF total (18 dec)")
+    total_tokens_claimed: Mapped[int] = mapped_column(Numeric(78, 0), nullable=False, default=0, comment="ETRF reclamado (18 dec)")
 
     # Participación por ronda
     rounds_participated: Mapped[int] = mapped_column(

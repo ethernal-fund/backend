@@ -7,3 +7,4 @@ from api.db.models.protocol import DeFiProtocol
 from api.db.models.contact import ContactMessage
 from api.db.models.survey import AnonymousSurvey, SurveyFollowUp
 from api.db.models.sale import SaleRound, SalePurchaseEvent, SaleWallet
+from api.db.models.indexer_state import IndexerState 

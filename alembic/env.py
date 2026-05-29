@@ -1,99 +1,65 @@
-"""
-alembic/env.py — Backend (app principal)
-
-Configuración de Alembic para el backend principal.
-Apunta al schema 'public' de PostgreSQL.
-"""
 import asyncio
 import os
-import ssl
+import sys
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
+from alembic import context
 
+# ── Path ──────────────────────────────────────────────────────────────────────
+# Agrega backend/ al path para que los imports de api.* funcionen
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── Settings (carga el .env automáticamente vía pydantic-settings) ────────────
+from api.config import settings
+
+# ── Importar todos los modelos para que Alembic los detecte ──────────────────
+# El __init__.py registra todos los modelos en Base.metadata
 from api.db.base import Base
-import api.db.models 
+import api.db.models  
 
+# ── Alembic config ────────────────────────────────────────────────────────────
 config = context.config
 
+# Inyectar la DATABASE_URL desde settings (ignora lo que haya en alembic.ini)
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+# Configurar logging desde alembic.ini
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
-_SCHEMA = "public"
-
-def include_object(object, name, type_, reflected, compare_to):
-    """Ignorar tablas de schemas internos de Supabase (auth, storage, realtime, etc.)"""
-    schema = getattr(object, "schema", None)
-    if schema is not None and schema != _SCHEMA:
-        return False
-    return True
-
-def _get_db_url() -> str:
-    url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
-    if not url:
-        raise ValueError("DATABASE_URL no configurada")
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
-
-def _get_ssl_context() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
 def run_migrations_offline() -> None:
-    url = _get_db_url()
+    """
+    Genera el SQL sin conectarse a la DB.
+    Útil para revisar las migraciones antes de aplicarlas.
+    """
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        version_table="alembic_version",
-        version_table_schema=_SCHEMA,
-        include_schemas=False,
-        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
-async def _run_async_migrations() -> None:
-    connectable = create_async_engine(
-        _get_db_url(),
-        poolclass=pool.NullPool,
-        connect_args={
-            "ssl": _get_ssl_context(),
-            "server_settings": {"client_encoding": "utf8"},
-            "statement_cache_size": 0,  
-        },
+def do_run_migrations(connection):
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
     )
+    with context.begin_transaction():
+        context.run_migrations()
 
+async def run_migrations_online() -> None:
+    connectable = create_async_engine(settings.DATABASE_URL)
     async with connectable.connect() as connection:
-        await connection.execute(text(f"SET search_path TO {_SCHEMA}"))
-        await connection.run_sync(_configure_and_run)
+        await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
-def _configure_and_run(sync_conn) -> None:
-    context.configure(
-        connection=sync_conn,
-        target_metadata=target_metadata,
-        version_table="alembic_version",
-        version_table_schema=_SCHEMA,
-        include_schemas=False,
-        include_object=include_object,
-    )
-    with context.begin_transaction():
-        context.run_migrations()
-
-def run_migrations_online() -> None:
-    asyncio.run(_run_async_migrations())
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    asyncio.run(run_migrations_online())
