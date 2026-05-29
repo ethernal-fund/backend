@@ -1,6 +1,4 @@
 """
-api/v1/routers/sale.py
-
 Endpoints del token sale ETRF.
 
 ENDPOINTS PÚBLICOS:
@@ -21,6 +19,7 @@ DIFERENCIAS CON LA VERSIÓN ANTERIOR:
     pero no expuestos
   - La lógica de ronda ahora usa raw_round_to_response() de chain.py
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +32,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import update
 
 from api.core.dependencies import get_current_wallet
-from api.database import get_db
+from api.db.session import get_db
 from api.db.models.sale import SalePurchaseEvent, SaleWallet
 from api.schemas.sale import (
     PurchaseResponse,
