@@ -51,11 +51,6 @@ from api.schemas.sale import (
 
 logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Excepciones propias
-# ─────────────────────────────────────────────────────────────────────────────
-
 class ChainError(Exception):
     """Error de conectividad o dato inesperado desde la chain."""
 
@@ -63,17 +58,8 @@ class ChainError(Exception):
 class ConfigError(RuntimeError):
     """Variable de entorno obligatoria no configurada."""
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ABIs mínimos
-# Sincronizar con saleETRF.vy y vestingETRF.vy si se agregan funciones.
-# ─────────────────────────────────────────────────────────────────────────────
-
-#
-# SaleETRF — funciones de lectura y eventos
-#
 SALE_ABI: list[dict] = [
-    # ── Eventos ──────────────────────────────────────────────────────────────
+    # ── Eventos 
     {
         "name":   "TokensPurchased",
         "type":   "event",
@@ -103,7 +89,7 @@ SALE_ABI: list[dict] = [
             {"name": "end_time",     "type": "uint256", "indexed": False},
         ],
     },
-    # ── Lectura ───────────────────────────────────────────────────────────────
+    # ── Lectura 
     {
         "name":            "getCurrentRound",
         "type":            "function",
@@ -216,7 +202,7 @@ SALE_ABI: list[dict] = [
 # VestingETRF — funciones de lectura
 #
 VESTING_ABI: list[dict] = [
-    # ── Eventos ──────────────────────────────────────────────────────────────
+    # ── Eventos 
     {
         "name":   "TokensClaimed",
         "type":   "event",
@@ -226,7 +212,7 @@ VESTING_ABI: list[dict] = [
             {"name": "total_released", "type": "uint256", "indexed": False},
         ],
     },
-    # ── Lectura ───────────────────────────────────────────────────────────────
+    # ── Lectura 
     {
         "name":            "schedules",
         "type":            "function",
@@ -329,17 +315,11 @@ _ROUND_NAMES: dict[int, str] = {
     2: "Public Round",
 }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Conexión y contratos
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _get_rpc_url() -> str:
     url = getattr(settings, "SALE_RPC_URL", None)
     if not url:
         raise ConfigError("SALE_RPC_URL no configurada en settings")
     return url
-
 
 def _get_w3() -> Web3:
     """
@@ -352,7 +332,6 @@ def _get_w3() -> Web3:
         raise ChainError(f"No se pudo conectar al RPC: {_get_rpc_url()[:40]}...")
     return w3
 
-
 def _get_sale_contract(w3: Web3) -> Contract:
     addr = getattr(settings, "SALE_CONTRACT_ADDRESS", None)
     if not addr:
@@ -362,7 +341,6 @@ def _get_sale_contract(w3: Web3) -> Contract:
         abi=SALE_ABI,
     )
 
-
 def _get_vesting_contract(w3: Web3) -> Contract:
     addr = getattr(settings, "VESTING_CONTRACT_ADDRESS", None)
     if not addr:
@@ -371,11 +349,6 @@ def _get_vesting_contract(w3: Web3) -> Contract:
         address=Web3.to_checksum_address(addr),
         abi=VESTING_ABI,
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers de formato
-# ─────────────────────────────────────────────────────────────────────────────
 
 def format_units(value: int, decimals: int) -> str:
     """
@@ -393,7 +366,6 @@ def format_units(value: int, decimals: int) -> str:
     frac_str     = str(frac_part).zfill(decimals).rstrip("0") or "0"
     return f"{integer_part}.{frac_str}"
 
-
 def _round_status(raw: RawRoundData) -> str:
     """Determina el estado de una ronda a partir de sus flags."""
     if raw.is_active:
@@ -402,14 +374,8 @@ def _round_status(raw: RawRoundData) -> str:
         return "ended"
     return "upcoming"
 
-
 def _round_name(round_id: int) -> str:
     return _ROUND_NAMES.get(round_id, f"Round {round_id}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Funciones síncronas de lectura (se ejecutan en thread pool)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _sync_get_current_round() -> RawRoundData:
     """
@@ -439,7 +405,6 @@ def _sync_get_current_round() -> RawRoundData:
         vesting_months = int(raw[9]),
     )
 
-
 def _sync_get_round(round_id: int) -> RawRoundData:
     """Lee una ronda específica por índice (0–2) desde SaleETRF.getRound()."""
     w3       = _get_w3()
@@ -466,7 +431,6 @@ def _sync_get_round(round_id: int) -> RawRoundData:
         cliff_months   = int(raw[10]),
         vesting_months = int(raw[11]),
     )
-
 
 def _sync_get_all_rounds() -> list[RawRoundData]:
     """
@@ -503,7 +467,6 @@ def _sync_get_all_rounds() -> list[RawRoundData]:
             logger.warning("getRound(%d) falló: %s", i, exc)
 
     return rounds
-
 
 def _sync_get_user_purchase(wallet: str, round_id: int) -> RawPurchaseData:
     """
@@ -559,7 +522,6 @@ def _sync_get_user_purchase(wallet: str, round_id: int) -> RawPurchaseData:
         start_time     = start_time,
     )
 
-
 def _sync_get_vesting_schedule(wallet: str) -> Optional[RawVestingSchedule]:
     """
     Lee el VestingSchedule completo de un beneficiario desde VestingETRF.
@@ -587,7 +549,6 @@ def _sync_get_vesting_schedule(wallet: str) -> Optional[RawVestingSchedule]:
         revoked         = bool(raw[5]),
     )
 
-
 def _sync_get_round_info(round_id: int) -> RawRoundInfo:
     """
     Lee RoundInfo de VestingETRF para un round_id dado.
@@ -609,7 +570,6 @@ def _sync_get_round_info(round_id: int) -> RawRoundInfo:
         recovered       = bool(raw[3]),
         is_active       = bool(raw[4]),
     )
-
 
 def _sync_verify_tx(tx_hash: str, expected_wallet: str) -> Optional[IndexedSaleEvent]:
     """
@@ -663,6 +623,7 @@ def _sync_verify_tx(tx_hash: str, expected_wallet: str) -> Optional[IndexedSaleE
                     tx_hash      = tx_hash,
                     wallet       = buyer,
                     block        = block,
+                    round_id     = int(evt["args"]["round_id"]),
                     usdc_amount  = int(evt["args"]["usdc_amount"]),
                     token_amount = int(evt["args"]["token_amount"]),
                     timestamp    = timestamp,
@@ -702,31 +663,22 @@ def _sync_verify_tx(tx_hash: str, expected_wallet: str) -> Optional[IndexedSaleE
         logger.error("Error verificando tx %s: %s", tx_hash[:12], exc)
         return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API pública async — para usar desde routers y otros services
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def _in_thread(fn, *args):
     """Ejecuta una función síncrona en el thread pool del event loop."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, fn, *args)
 
-
 async def get_current_round() -> RawRoundData:
     """Lee la ronda activa (o última creada) desde SaleETRF."""
     return await _in_thread(_sync_get_current_round)
-
 
 async def get_round(round_id: int) -> RawRoundData:
     """Lee una ronda específica por índice."""
     return await _in_thread(_sync_get_round, round_id)
 
-
 async def get_all_rounds() -> list[RawRoundData]:
     """Lee todas las rondas creadas."""
     return await _in_thread(_sync_get_all_rounds)
-
 
 async def get_user_purchase(wallet: str, round_id: int) -> RawPurchaseData:
     """
@@ -735,7 +687,6 @@ async def get_user_purchase(wallet: str, round_id: int) -> RawPurchaseData:
     """
     return await _in_thread(_sync_get_user_purchase, wallet, round_id)
 
-
 async def get_vesting_schedule(wallet: str) -> Optional[RawVestingSchedule]:
     """
     Lee el VestingSchedule de un beneficiario.
@@ -743,11 +694,9 @@ async def get_vesting_schedule(wallet: str) -> Optional[RawVestingSchedule]:
     """
     return await _in_thread(_sync_get_vesting_schedule, wallet)
 
-
 async def get_round_info(round_id: int) -> RawRoundInfo:
     """Lee el RoundInfo de VestingETRF para un round_id."""
     return await _in_thread(_sync_get_round_info, round_id)
-
 
 async def verify_tx(tx_hash: str, wallet: str) -> Optional[IndexedSaleEvent]:
     """
@@ -756,12 +705,6 @@ async def verify_tx(tx_hash: str, wallet: str) -> Optional[IndexedSaleEvent]:
     Diseñado para ser llamado desde background tasks.
     """
     return await _in_thread(_sync_verify_tx, tx_hash, wallet)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers de conversión: Raw → Response schemas
-# (se usan también desde services/vesting.py)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def raw_round_to_response(raw: RawRoundData, *, cached: bool = False) -> dict:
     """

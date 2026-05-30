@@ -46,6 +46,7 @@ security = HTTPBearer(auto_error=False)
 # Header RFC 6750 para respuestas 401 en endpoints que requieren auth
 _WWW_AUTH_BEARER = {"WWW-Authenticate": 'Bearer realm="ethernal"'}
 
+
 def _token_from_credentials(
     credentials: Optional[HTTPAuthorizationCredentials],
 ) -> str:
@@ -58,6 +59,7 @@ def _token_from_credentials(
         )
     return credentials.credentials
 
+
 def _decode_or_401(token: str) -> dict:
     """Decodifica el JWT o lanza 401 con el header correcto."""
     payload = decode_access_token(token)
@@ -68,6 +70,7 @@ def _decode_or_401(token: str) -> dict:
             headers=_WWW_AUTH_BEARER,
         )
     return payload
+
 
 @router.post(
     "/nonce",
@@ -84,10 +87,13 @@ async def request_nonce(
     request: Request,
 ) -> NonceResponse:
     await limiter(request, max_requests=10, window=60, key_prefix="nonce")
-    nonce   = await generate_nonce(payload.wallet_address)
-    message = build_siwe_message(payload.wallet_address, nonce)
+
+    # generate_nonce ahora devuelve (nonce, message) — ambos se persisten en Redis
+    nonce, message = await generate_nonce(payload.wallet_address)
+
     logger.info("Nonce issued | wallet=%s", payload.wallet_address[:10])
     return NonceResponse(nonce=nonce, message=message)
+
 
 @router.post(
     "/auth",
@@ -106,19 +112,21 @@ async def authenticate(
 ) -> AuthResponse:
     await limiter(request, max_requests=10, window=60, key_prefix="auth")
 
-    # 1. Consumir nonce atómicamente — si expiró o fue consumido, falla aquí.
-    stored_nonce = await consume_nonce(payload.wallet_address)
-    if not stored_nonce:
+    # 1. Consumir nonce atómicamente — devuelve {"nonce": str, "message": str} o None.
+    #    Si expiró o fue consumido (ej: doble submit), falla aquí.
+    stored = await consume_nonce(payload.wallet_address)
+    if not stored:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nonce expired or not found. Request a new one via POST /users/nonce.",
             headers=_WWW_AUTH_BEARER,
         )
-    if stored_nonce != payload.nonce:
-        # El nonce ya fue consumido arriba — no hay nada extra que limpiar.
+
+    # 2. Verificar que el nonce del payload coincide con el almacenado.
+    if stored["nonce"] != payload.nonce:
         logger.warning(
             "Nonce mismatch | wallet=%s expected=%s received=%s",
-            payload.wallet_address[:10], stored_nonce[:8], payload.nonce[:8],
+            payload.wallet_address[:10], stored["nonce"][:8], payload.nonce[:8],
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -126,15 +134,31 @@ async def authenticate(
             headers=_WWW_AUTH_BEARER,
         )
 
-    # 2. Verificar firma ECDSA.
-    if not verify_signature(payload.wallet_address, payload.signature, payload.nonce):
+    # 3. Obtener el mensaje original — el que el usuario realmente firmó.
+    #    NUNCA reconstruir el mensaje aquí: el Issued At sería distinto y la firma fallaría.
+    original_message = stored.get("message")
+    if not original_message:
+        # Nonce en formato legacy (string plano sin mensaje guardado).
+        # El usuario debe solicitar un nonce nuevo.
+        logger.warning(
+            "Nonce legacy sin mensaje guardado | wallet=%s — se rechaza la auth.",
+            payload.wallet_address[:10],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nonce expired or not found. Request a new one via POST /users/nonce.",
+            headers=_WWW_AUTH_BEARER,
+        )
+
+    # 4. Verificar firma ECDSA contra el mensaje original guardado en Redis.
+    if not verify_signature(payload.wallet_address, payload.signature, original_message):
         raise InvalidSignature()
 
-    # 3. Crear o actualizar el usuario en la DB.
+    # 5. Crear o actualizar el usuario en la DB.
     repo          = UserRepository(db)
     user, created = await repo.get_or_create(payload.wallet_address)
 
-    # 4. Emitir tokens.
+    # 6. Emitir tokens.
     access_token  = create_access_token(payload.wallet_address)
     refresh_token = await create_refresh_token(payload.wallet_address)
 
@@ -153,6 +177,7 @@ async def authenticate(
         refresh_expires_in = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
         is_new_user        = created,
     )
+
 
 @router.post(
     "/auth/refresh",
@@ -190,6 +215,7 @@ async def rotate_refresh_token(
         refresh_expires_in = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
     )
 
+
 @router.delete(
     "/auth/session",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -209,7 +235,6 @@ async def logout(
     wallet_log = "unknown"
     if credentials and credentials.credentials:
         token = credentials.credentials
-        # Extraer wallet antes de blacklistar (para logging).
         p = decode_access_token(token)
         if p:
             wallet_log = p.get("sub", "unknown")[:10]
@@ -219,6 +244,7 @@ async def logout(
         await consume_refresh_token(payload.refresh_token)
 
     logger.info("Session closed | wallet=%s", wallet_log)
+
 
 @router.post(
     "/auth/revoke-all",
@@ -246,7 +272,6 @@ async def revoke_all_sessions(
 
     wallet = payload["sub"]
 
-    # Revocar todos los refresh tokens + blacklistar el access token actual.
     revoked = await revoke_all_refresh_tokens(wallet)
     await blacklist_token(token)
 
@@ -255,15 +280,14 @@ async def revoke_all_sessions(
         wallet[:10], revoked,
     )
 
+
 @router.get(
     "/auth/status",
     response_model=AuthStatusResponse,
     summary="Verificar estado del access token",
     description=(
         "Verifica si el access token sigue siendo válido (no expirado, no blacklisteado). "
-        "No toca la DB — es una validación rápida contra Redis + JWT. "
-        "El frontend puede llamarlo al montar la app para saber si mostrar "
-        "la UI autenticada sin esperar a /users/me."
+        "No toca la DB — es una validación rápida contra Redis + JWT."
     ),
 )
 async def auth_status(
@@ -289,6 +313,7 @@ async def auth_status(
         expires_at     = expires_at,
     )
 
+
 @router.get(
     "/me",
     response_model=UserOut,
@@ -303,6 +328,7 @@ async def get_me(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
 
 @router.post(
     "/survey",

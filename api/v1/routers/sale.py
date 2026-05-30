@@ -29,10 +29,10 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy import update
+from sqlalchemy import func
 
 from api.core.dependencies import get_current_wallet
-from api.db.session import get_db
+from api.db.session import get_db_context
 from api.db.models.sale import SalePurchaseEvent, SaleWallet
 from api.schemas.sale import (
     PurchaseResponse,
@@ -49,53 +49,38 @@ from api.services.chain import ChainError, ConfigError, raw_round_to_response
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sale", tags=["sale"])
 
-# ── Cache en memoria para la ronda activa ─────────────────────────────────────
-# TTL de 30s — absorbe picos de tráfico sin RPC spam.
-# En un deployment multi-worker esto cachea por proceso, no globalmente.
-# Para cache compartida entre workers usar Redis con el mismo patrón.
 _round_cache: dict = {"data": None, "expires_at": 0.0}
 _ROUND_CACHE_TTL = 30
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 async def _persist_event(event) -> None:
-    """
-    Persiste un IndexedSaleEvent en sale_purchase_events y actualiza sale_wallets.
-    Se llama desde _index_purchase — cualquier excepción se loguea y no se propaga.
-
-    sale_purchase_events: INSERT ON CONFLICT DO NOTHING (idempotente por tx_hash+type)
-    sale_wallets:         UPSERT acumulando totales y actualizando bitmask de rondas
-    """
     now = datetime.now(timezone.utc)
 
+    is_purchase = event.event_type.value == "purchase"
+    usdc_delta  = event.usdc_amount  or 0
+    token_delta = event.token_amount or 0
+    round_bit   = (1 << event.round_id) if (is_purchase and event.round_id is not None) else 0
+
     try:
-        async with get_db() as db:
-            # ── 1. Insertar evento ─────────────────────────────────────────────
+        async with get_db_context() as db:
+
+            # 1. Insertar evento (idempotente por unique constraint)
             await db.execute(
                 pg_insert(SalePurchaseEvent)
                 .values(
                     tx_hash      = event.tx_hash,
                     event_type   = event.event_type.value,
                     wallet       = event.wallet,
-                    round_id     = None,                 # enriquecer si el evento lo incluye
+                    round_id     = event.round_id,          
                     usdc_amount  = event.usdc_amount,
                     token_amount = event.token_amount,
                     block_number = event.block,
                     tx_timestamp = datetime.fromisoformat(event.timestamp),
                     indexed_at   = now,
                 )
-                .on_conflict_do_nothing(
-                    constraint="uq_purchase_events_tx_type"
-                )
+                .on_conflict_do_nothing(constraint="uq_purchase_events_tx_type")
             )
 
-            # ── 2. Upsert en sale_wallets ──────────────────────────────────────
-            # Intentar insertar nueva fila; si existe, acumular los totales.
-            is_purchase = event.event_type.value == "purchase"
-            usdc_delta  = event.usdc_amount  or 0
-            token_delta = event.token_amount or 0
-
+            # 2. Upsert en sale_wallets acumulando totales y bitmask de rondas
             await db.execute(
                 pg_insert(SaleWallet)
                 .values(
@@ -103,7 +88,7 @@ async def _persist_event(event) -> None:
                     total_usdc_spent     = usdc_delta  if is_purchase else 0,
                     total_tokens_bought  = token_delta if is_purchase else 0,
                     total_tokens_claimed = token_delta if not is_purchase else 0,
-                    rounds_participated  = 0,
+                    rounds_participated  = round_bit,
                     purchase_count       = 1 if is_purchase else 0,
                     claim_count          = 1 if not is_purchase else 0,
                     first_purchase_at    = now if is_purchase else None,
@@ -113,11 +98,18 @@ async def _persist_event(event) -> None:
                 .on_conflict_do_update(
                     index_elements=["wallet"],
                     set_={
+                        "rounds_participated":  func.coalesce(
+                            SaleWallet.rounds_participated, 0
+                        ).op("|")(round_bit),
                         "total_usdc_spent":     SaleWallet.total_usdc_spent     + (usdc_delta  if is_purchase else 0),
                         "total_tokens_bought":  SaleWallet.total_tokens_bought  + (token_delta if is_purchase else 0),
                         "total_tokens_claimed": SaleWallet.total_tokens_claimed + (token_delta if not is_purchase else 0),
                         "purchase_count":       SaleWallet.purchase_count + (1 if is_purchase else 0),
                         "claim_count":          SaleWallet.claim_count    + (1 if not is_purchase else 0),
+                        "first_purchase_at":    func.coalesce(
+                            SaleWallet.first_purchase_at,
+                            now if is_purchase else None,
+                        ),
                         "last_activity_at":     now,
                         "updated_at":           now,
                     },
@@ -125,8 +117,9 @@ async def _persist_event(event) -> None:
             )
 
         logger.info(
-            "Evento persistido | type=%s tx=%s wallet=%s",
-            event.event_type.value, event.tx_hash[:12], event.wallet[:10],
+            "Evento persistido | type=%s tx=%s wallet=%s round=%s",
+            event.event_type.value, event.tx_hash[:12],
+            event.wallet[:10], event.round_id,
         )
 
     except Exception as exc:
@@ -134,7 +127,6 @@ async def _persist_event(event) -> None:
             "Error persistiendo evento | tx=%s: %s",
             event.tx_hash[:12], exc, exc_info=True,
         )
-
 
 async def _index_purchase(tx_hash: str, wallet: str) -> None:
     """
@@ -161,9 +153,6 @@ async def _index_purchase(tx_hash: str, wallet: str) -> None:
 
     await _persist_event(event)
 
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
 @router.post(
     "/verify-purchase",
     response_model=VerifyPurchaseResponse,
@@ -184,18 +173,14 @@ async def verify_purchase(
     on-chain (waitForTransactionReceipt resuelve). Responde 202 y procesa
     la verificación on-chain en background para no bloquear al cliente.
     """
-    # La validación del formato ya la hace el validator de VerifyPurchaseRequest
     tx_hash = payload.tx_hash
-
     background.add_task(_index_purchase, tx_hash, wallet)
-
     logger.info("verify-purchase encolado | tx=%s wallet=%s", tx_hash[:12], wallet[:10])
     return VerifyPurchaseResponse(
         accepted = True,
         tx_hash  = tx_hash,
         message  = "Transacción recibida y en proceso de verificación",
     )
-
 
 @router.get(
     "/round",
@@ -211,14 +196,11 @@ async def get_current_round() -> RoundResponse:
     en lugar de retornar 503 — el dato es eventualmente consistente.
     """
     now = time.time()
-
     if _round_cache["data"] and now < _round_cache["expires_at"]:
         return RoundResponse(**_round_cache["data"], cached=True)
-
     try:
         raw  = await chain.get_current_round()
         data = raw_round_to_response(raw, cached=False)
-
         _round_cache["data"]       = data
         _round_cache["expires_at"] = now + _ROUND_CACHE_TTL
 
@@ -226,7 +208,6 @@ async def get_current_round() -> RoundResponse:
 
     except ConfigError as exc:
         raise HTTPException(status_code=501, detail=str(exc))
-
     except ChainError as exc:
         if _round_cache["data"]:
             age = now - (_round_cache["expires_at"] - _ROUND_CACHE_TTL)
@@ -234,7 +215,6 @@ async def get_current_round() -> RoundResponse:
             return RoundResponse(**_round_cache["data"], cached=True)
         logger.error("Error leyendo ronda on-chain: %s", exc)
         raise HTTPException(status_code=503, detail="No se pudo leer la ronda on-chain")
-
 
 @router.get(
     "/my-purchase",
@@ -254,7 +234,6 @@ async def get_my_purchase(
     enviar emails de confirmación o generar reportes sin estado de frontend.
     """
     try:
-        # Necesitamos el round_id activo para getUserPurchase(user, round_id)
         current = await chain.get_current_round()
         raw     = await chain.get_user_purchase(wallet, current.id)
 
@@ -263,8 +242,6 @@ async def get_my_purchase(
     except ChainError as exc:
         logger.error("Error leyendo purchase | wallet=%s: %s", wallet[:10], exc)
         raise HTTPException(status_code=503, detail="No se pudo leer la compra on-chain")
-
-    # Calcular cliff y vesting end para comodidad del frontend
     cliff_ends_at   = 0
     vesting_ends_at = 0
     if raw.start_time > 0 and raw.has_purchased:
@@ -287,7 +264,6 @@ async def get_my_purchase(
         vesting_ends_at = vesting_ends_at,
     )
 
-
 @router.get(
     "/vesting/schedule",
     response_model=VestingScheduleResponse,
@@ -306,7 +282,6 @@ async def get_vesting_schedule(
     Con ?wallet= solo lo puede hacer un admin (verificado contra settings).
     """
     from api.core.auth import is_admin
-
     target = current_wallet
     if wallet_param:
         if not is_admin(current_wallet):
@@ -323,15 +298,12 @@ async def get_vesting_schedule(
     except ChainError as exc:
         logger.error("Error leyendo schedule | wallet=%s: %s", target[:10], exc)
         raise HTTPException(status_code=503, detail="No se pudo leer el schedule on-chain")
-
     if schedule is None:
         raise HTTPException(
             status_code=404,
             detail=f"El wallet {target} no tiene schedule de vesting",
         )
-
     return schedule
-
 
 @router.get(
     "/vesting/round-info",

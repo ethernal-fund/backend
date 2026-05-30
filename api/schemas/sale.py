@@ -23,9 +23,6 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Enums
-# ─────────────────────────────────────────────────────────────────────────────
 class RoundStatus(str, Enum):
     upcoming   = "upcoming"
     active     = "active"
@@ -36,9 +33,6 @@ class EventType(str, Enum):
     purchase = "purchase"
     claim    = "claim"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Datos raw de chain (internos — no se exponen directamente en la API)
-# ─────────────────────────────────────────────────────────────────────────────
 class RawRoundData(BaseModel):
     """
     Tupla cruda de getCurrentRound() / getRound() en SaleETRF.
@@ -99,9 +93,6 @@ class RawRoundInfo(BaseModel):
     recovered:       bool
     is_active:       bool
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas de respuesta de la API — /sale/round
-# ─────────────────────────────────────────────────────────────────────────────
 class RoundResponse(BaseModel):
     """
     Respuesta de GET /sale/round.
@@ -123,9 +114,6 @@ class RoundResponse(BaseModel):
     buyers:         int   = 0
     cached:         bool  = False
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas de respuesta de la API — /sale/my-purchase
-# ─────────────────────────────────────────────────────────────────────────────
 class PurchaseResponse(BaseModel):
     """
     Respuesta de GET /sale/my-purchase.
@@ -143,9 +131,6 @@ class PurchaseResponse(BaseModel):
     cliff_ends_at:  int   = Field(0, description="Timestamp en que termina el cliff")
     vesting_ends_at:int   = Field(0, description="Timestamp en que termina el vesting")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas de respuesta de la API — /sale/vesting/schedule
-# ─────────────────────────────────────────────────────────────────────────────
 class VestingScheduleResponse(BaseModel):
     """
     Detalle del schedule de vesting de un beneficiario.
@@ -164,9 +149,6 @@ class VestingScheduleResponse(BaseModel):
     revoked:         bool
     time_until_cliff:int   = Field(description="Segundos hasta el cliff. 0 si ya pasó")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas de respuesta de la API — /sale/vesting/round-info
-# ─────────────────────────────────────────────────────────────────────────────
 class RoundVestingInfoResponse(BaseModel):
     """
     Información de vesting de una ronda específica.
@@ -187,9 +169,6 @@ class RoundVestingInfoResponse(BaseModel):
         description="True si el timelock de 90 días ya pasó y se puede ejecutar recover_unsold()"
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request bodies
-# ─────────────────────────────────────────────────────────────────────────────
 class VerifyPurchaseRequest(BaseModel):
     """
     Body de POST /sale/verify-purchase.
@@ -231,6 +210,7 @@ class IndexedSaleEvent(BaseModel):
     tx_hash:      str
     wallet:       str
     block:        int
+    round_id:     Optional[int] = None
     usdc_amount:  Optional[int] = None   # Solo en compras (6 decimales)
     token_amount: Optional[int] = None   # ETRF (18 decimales) — compra o claim
     timestamp:    str                    # ISO 8601 UTC

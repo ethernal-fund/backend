@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ from api.core.redis import get_redis
 logger = logging.getLogger(__name__)
 
 # ── Redis key prefixes ────────────────────────────────────────────────────────
-_NONCE_PREFIX       = "nonce:"        # nonce:<wallet_lower>      → nonce (str)
+_NONCE_PREFIX       = "nonce:"        # nonce:<wallet_lower>      → JSON {nonce, message}
 _REFRESH_PREFIX     = "refresh:"      # refresh:<token>           → wallet (str)
 _BLACKLIST_PREFIX   = "jwt_bl:"       # jwt_bl:<jti>              → "1"
 _REFRESH_IDX_PREFIX = "ridx:"         # ridx:<wallet_lower>       → set{token, ...}
@@ -47,38 +48,72 @@ def extract_token_from_request(request: Request) -> Optional[str]:
 
     return None
 
-async def generate_nonce(wallet_address: str) -> str:
+async def generate_nonce(wallet_address: str) -> tuple[str, str]:
     """
-    Genera un nonce criptográficamente seguro y lo almacena en Redis.
-    Si ya existía uno previo para esa wallet, lo sobreescribe (un nonce activo
-    por wallet en todo momento).
-    """
-    nonce = secrets.token_hex(16)
-    key   = _NONCE_PREFIX + wallet_address.lower()
-    redis = await get_redis()
-    await redis.setex(key, settings.NONCE_TTL_SECONDS, nonce)
-    logger.debug("Nonce generated | wallet=%s", wallet_address[:10])
-    return nonce
+    Genera un nonce criptográficamente seguro, construye el mensaje SIWE completo
+    (con el Issued At fijado en este momento) y guarda AMBOS en Redis como JSON.
 
-async def consume_nonce(wallet_address: str) -> Optional[str]:
+    Devuelve (nonce, message) para que el router los incluya en la respuesta.
+
+    ⚠  El mensaje se construye UNA SOLA VEZ aquí y se persiste en Redis.
+       verify_signature() lo leerá tal cual — nunca lo reconstruye, porque
+       cualquier diferencia de timestamp haría que la firma no matcheara.
+    """
+    nonce   = secrets.token_hex(16)
+    message = build_siwe_message(wallet_address, nonce)
+    key     = _NONCE_PREFIX + wallet_address.lower()
+
+    redis = await get_redis()
+    await redis.setex(
+        key,
+        settings.NONCE_TTL_SECONDS,
+        json.dumps({"nonce": nonce, "message": message}),
+    )
+    logger.debug("Nonce generated | wallet=%s", wallet_address[:10])
+    return nonce, message
+
+async def consume_nonce(wallet_address: str) -> Optional[dict]:
     """
     Lee y elimina el nonce en una sola operación atómica (GETDEL).
-    Devuelve el nonce si existía, None si ya expiró o fue consumido.
-    Usar siempre éste en lugar de get() + delete() por separado.
+
+    Devuelve un dict {"nonce": str, "message": str} si existía,
+    o None si ya expiró o fue consumido.
+
+    Compatibilidad hacia atrás: si el valor almacenado es un string plano
+    (nonces generados antes del cambio a JSON), lo trata como nonce sin mensaje.
+    En ese caso la verificación de firma fallará — el usuario deberá solicitar
+    un nonce nuevo.
     """
     key   = _NONCE_PREFIX + wallet_address.lower()
     redis = await get_redis()
-    nonce = await redis.getdel(key)
-    if nonce:
-        logger.debug("Nonce consumed | wallet=%s", wallet_address[:10])
-    return nonce
+    raw   = await redis.getdel(key)
+
+    if not raw:
+        return None
+    logger.debug("Nonce consumed | wallet=%s", wallet_address[:10])
+    try:
+        data = json.loads(raw)
+        # Asegurarse de que tenga las claves esperadas
+        if isinstance(data, dict) and "nonce" in data and "message" in data:
+            return data
+        # JSON válido pero con forma inesperada — tratar como nonce plano
+        raise ValueError("Unexpected JSON shape")
+    except (json.JSONDecodeError, ValueError):
+        # Compatibilidad: valor almacenado como string plano (nonce anterior)
+        logger.warning(
+            "Nonce en formato legacy (string plano) | wallet=%s — el usuario "
+            "debe solicitar un nonce nuevo para completar la autenticación.",
+            wallet_address[:10],
+        )
+        return {"nonce": raw, "message": None}
 
 def build_siwe_message(wallet_address: str, nonce: str) -> str:
     """
-    Construye el mensaje EIP-4361 (Sign-In With Ethereum) exactamente igual
-    que el frontend debe hacerlo.  El formato es deliberadamente estricto:
-    cualquier diferencia de whitespace o salto de línea causa que la firma
-    no matchee.
+    Construye el mensaje EIP-4361 (Sign-In With Ethereum).
+
+    Este método se llama exclusivamente desde generate_nonce() para fijar
+    el Issued At en el momento de emisión del nonce.  NO debe llamarse desde
+    verify_signature() — la verificación usa el mensaje guardado en Redis.
 
     ⚠  Si cambiás este formato, el frontend debe cambiar exactamente igual.
     """
@@ -98,7 +133,6 @@ def build_siwe_message(wallet_address: str, nonce: str) -> str:
         f"Nonce: {nonce}\n"
         f"Issued At: {issued_at}"
     )
-
 build_auth_message = build_siwe_message
 
 def verify_eoa_signature(wallet_address: str, signature: str, message: str) -> bool:
@@ -114,22 +148,27 @@ def verify_eoa_signature(wallet_address: str, signature: str, message: str) -> b
         logger.debug("EOA signature check failed: %s", exc)
         return False
 
-def verify_signature(wallet_address: str, signature: str, nonce: str) -> bool:
+def verify_signature(wallet_address: str, signature: str, message: str) -> bool:
     """
-    Punto de entrada principal.  Reconstruye el mensaje SIWE y verifica la firma.
+    Verifica que la firma corresponda al mensaje SIWE original.
 
-    Flujo:
-      1. Reconstruye el mensaje a partir del nonce (mismo algoritmo que el frontend).
-      2. Verifica firma EOA (ECDSA — el 99 % de los casos).
+    IMPORTANTE: recibe el `message` completo (leído desde Redis por consume_nonce),
+    NO el nonce. Esto garantiza que se verifica contra el string exacto que
+    el usuario firmó, incluyendo el Issued At original.
+
+    Flujo completo:
+      1. Frontend llama POST /users/nonce  → recibe {nonce, message}
+      2. Usuario firma `message` con su wallet
+      3. Frontend llama POST /users/auth   → envía {wallet_address, nonce, signature}
+      4. Backend llama consume_nonce()     → obtiene {nonce, message} de Redis
+      5. Backend llama verify_signature()  → pasa message original, no lo reconstruye
 
     Nota sobre EIP-1271 (smart-contract wallets como Safe/Gnosis):
       La verificación EIP-1271 requiere una llamada RPC al contrato del wallet.
       Para habilitarla, inyectá un w3 instance y llamá a:
           contract.functions.isValidSignature(msg_hash, sig).call()
-      Esto se omite aquí para no acoplar auth.py a BlockchainService, pero
-      el esqueleto está preparado para que lo agreguen si lo necesitan.
+      Esto se omite aquí para no acoplar auth.py a BlockchainService.
     """
-    message = build_siwe_message(wallet_address, nonce)
     return verify_eoa_signature(wallet_address, signature, message)
 
 def create_access_token(wallet_address: str) -> str:
@@ -164,8 +203,7 @@ def decode_access_token(token: str) -> Optional[dict]:
             settings.JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
-        # Rechazar tokens que no sean de tipo "access" (ej: si alguien
-        # intenta usar un token de otro propósito como access token).
+        # Rechazar tokens que no sean de tipo "access"
         if payload.get("type") != "access":
             logger.debug(
                 "Token type mismatch: expected 'access', got '%s'",
@@ -179,7 +217,6 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.InvalidTokenError as exc:
         logger.debug("Invalid access token: %s", exc)
         return None
-
 decode_token = decode_access_token
 
 async def blacklist_token(token: str) -> None:
@@ -223,9 +260,6 @@ async def create_refresh_token(wallet_address: str) -> str:
     Almacenamiento:
       - Clave principal: refresh:<token>  → wallet (para consume)
       - Índice inverso:  ridx:<wallet>    → set{token, ...} (para revocar todos)
-
-    El índice inverso permite implementar "cerrar sesión en todos los dispositivos"
-    sin necesidad de iterar todas las keys de Redis.
     """
     token  = secrets.token_urlsafe(48)
     wallet = wallet_address.lower()
@@ -250,7 +284,6 @@ async def consume_refresh_token(refresh_token: str) -> Optional[str]:
     wallet = await redis.getdel(key)
 
     if wallet:
-        # Limpiar del índice inverso (best-effort, no crítico)
         try:
             await redis.srem(_REFRESH_IDX_PREFIX + wallet, refresh_token)
         except Exception:
@@ -262,7 +295,6 @@ async def consume_refresh_token(refresh_token: str) -> Optional[str]:
 async def revoke_all_refresh_tokens(wallet_address: str) -> int:
     """
     Revoca todos los refresh tokens activos de un wallet.
-    Útil para "cerrar sesión en todos los dispositivos" o ante sospecha de compromiso.
     Devuelve la cantidad de tokens revocados.
     """
     wallet  = wallet_address.lower()
