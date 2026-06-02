@@ -1,27 +1,4 @@
-# ============================================================================
-# render.yaml — Ethernal Backend API · Multichain
-#
-# CHAINS SOPORTADAS:
-#   Testnet : Sepolia (11155111) + Arbitrum Sepolia (421614)
-#   Mainnet : Ethereum (1)       + Arbitrum One    (42161)
-#
-# ESTRATEGIA DE DEPLOY:
-#   - Token Sale (saleETRF.vy + ETRF.vy) → Ethereum únicamente
-#   - Protocolo / operaciones futuras    → Arbitrum
-#   - Un indexer por chain (aislamiento de fallos)
-#   - Un cron único (opera sobre la DB, no sobre la chain)
-#   - ACTIVE_CHAINS controla qué indexers levantar sin tocar código
-#
-# ORDEN DE DEPLOY:
-#   1. Redis se crea primero (Render lo garantiza en blueprints)
-#   2. Web service arranca después de que Redis esté Available
-#   3. Indexers arrancan en paralelo, cada uno desde su DEPLOY_BLOCK
-#
-# VARIABLES sync:false → setear en Render Dashboard > Environment
-# ============================================================================
-
 services:
-
   - type: web
     name: ethernal-backend
     runtime: python
@@ -56,52 +33,38 @@ services:
           property: connectionString
 
       # ── Chains activas 
-      # Comma-separated. El API usa esto para validar requests y saber
-      # qué chain IDs son legítimos. Cambiar según entorno:
-      #   Testnet  → "11155111,421614"
-      #   Mainnet  → "1,42161"
       - key: ACTIVE_CHAINS
         value: "11155111,421614"
 
-      # ── Ethereum (Sale chain) 
-      # Sepolia en testnet → reemplazar por mainnet al hacer promote
-      - key: ETH_RPC_URL
-        sync: false
-      - key: ETH_CHAIN_ID
+      - key: SALE_RPC_URL
+        sync: false                    # ← Setear en Render Dashboard
+      - key: SALE_CONTRACT_ADDRESS
+        sync: false                    # ← Setear en Render Dashboard
+      - key: VESTING_CONTRACT_ADDRESS
+        sync: false                    # ← Setear en Render Dashboard
+      - key: SALE_CHAIN_ID
         value: "11155111"
-      - key: ETH_SALE_CONTRACT_ADDRESS
-        sync: false
-      - key: ETH_ETRF_TOKEN_ADDRESS
-        sync: false
-      - key: ETH_USDC_ADDRESS
-        sync: false
-      # Bloque de deploy del contrato en Ethereum
-      - key: ETH_SALE_DEPLOY_BLOCK
-        sync: false
 
-      # ── Arbitrum (Protocolo / futuro) 
-      # Arbitrum Sepolia en testnet → Arbitrum One en mainnet
-      - key: ARB_RPC_URL
+      - key: RPC_URL
         sync: false
-      - key: ARB_CHAIN_ID
+      - key: CHAIN_ID
         value: "421614"
-      - key: ARB_PROTOCOL_REGISTRY_ADDRESS
+
+      # Contratos del protocolo
+      - key: PERSONALFUNDFACTORY_ADDRESS
         sync: false
-      - key: ARB_TREASURY_ADDRESS
+      - key: PROTOCOLREGISTRY_ADDRESS
         sync: false
-      - key: ARB_FACTORY_ADDRESS
+      - key: TREASURY_ADDRESS
         sync: false
-      # Bloque de deploy del protocolo en Arbitrum
-      - key: ARB_DEPLOY_BLOCK
+      - key: USDC_ADDRESS
         sync: false
 
-      # ── Contratos compartidos 
+      # ── Auth 
       - key: ADMIN_WALLET
         sync: false
       - key: ADMIN_API_KEY
         sync: false
-
-      # ── Auth 
       - key: JWT_SECRET
         sync: false
       - key: JWT_ALGORITHM
@@ -130,163 +93,3 @@ services:
         value: "false"
       - key: SENTRY_DSN
         value: ""
-
-
-  # ════════════════════════════════════════════════════════════════════════════
-  # INDEXER — Ethereum (Sale chain)
-  # Escucha: TokensPurchased, TokensClaimed en saleETRF.vy
-  # Escribe: blockchain_events (chain_id=ETH) → purchases → claim_events
-  # ════════════════════════════════════════════════════════════════════════════
-  - type: worker
-    name: ethernal-indexer-eth
-    runtime: python
-    region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m indexer.main
-
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.3"
-      - key: ENVIRONMENT
-        value: production
-      - key: LOG_LEVEL
-        value: INFO
-
-      # INDEXER_CHAIN le dice al worker qué config leer.
-      # indexer/main.py hace: config = ChainConfig.from_env(os.getenv("INDEXER_CHAIN"))
-      - key: INDEXER_CHAIN
-        value: ethereum
-
-      - key: DATABASE_URL
-        sync: false
-
-      - key: ETH_RPC_URL
-        sync: false
-      - key: ETH_CHAIN_ID
-        value: "11155111"
-      - key: ETH_SALE_CONTRACT_ADDRESS
-        sync: false
-      - key: ETH_ETRF_TOKEN_ADDRESS
-        sync: false
-      - key: ETH_USDC_ADDRESS
-        sync: false
-      - key: ETH_SALE_DEPLOY_BLOCK
-        sync: false
-
-      # Chunks más chicos en Ethereum — el RPC free de Alchemy da 429
-      # más fácil en mainnet que en Sepolia.
-      - key: INDEXER_CHUNK_SIZE
-        value: "2000"
-      - key: INDEXER_POLL_INTERVAL
-        value: "12"
-
-      - key: SENTRY_ENABLED
-        value: "false"
-      - key: SENTRY_DSN
-        value: ""
-
-  # ════════════════════════════════════════════════════════════════════════════
-  # INDEXER — Arbitrum (Protocolo)
-  # Escucha: eventos del protocolo en Arbitrum 
-  # Por ahora indexa FundCreated, Deposit, Rebalance, etc.
-  # ════════════════════════════════════════════════════════════════════════════
-  - type: worker
-    name: ethernal-indexer-arb
-    runtime: python
-    region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m indexer.main
-
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.3"
-      - key: ENVIRONMENT
-        value: production
-      - key: LOG_LEVEL
-        value: INFO
-
-      - key: INDEXER_CHAIN
-        value: arbitrum
-
-      - key: DATABASE_URL
-        sync: false
-
-      - key: ARB_RPC_URL
-        sync: false
-      - key: ARB_CHAIN_ID
-        value: "421614"
-      - key: ARB_PROTOCOL_REGISTRY_ADDRESS
-        sync: false
-      - key: ARB_FACTORY_ADDRESS
-        sync: false
-      - key: ARB_DEPLOY_BLOCK
-        sync: false
-
-      # Arbitrum produce bloques cada ~250ms — chunk más grande está bien.
-      # Poll interval más corto porque los bloques son más rápidos.
-      - key: INDEXER_CHUNK_SIZE
-        value: "5000"
-      - key: INDEXER_POLL_INTERVAL
-        value: "3"
-
-      - key: SENTRY_ENABLED
-        value: "false"
-      - key: SENTRY_DSN
-        value: ""
-
-  # ════════════════════════════════════════════════════════════════════════════
-  # CRON — Un único worker, opera sobre la DB (no sobre chains)
-  # - Confirma txs pendientes (comprueba confirmaciones en ambas chains)
-  # - Actualiza vesting_snapshots
-  # - Recalcula round_stats
-  # DEBE terminar con sys.exit(0) o Render lo mata a los 30 minutos.
-  # ════════════════════════════════════════════════════════════════════════════
-  - type: cron
-    name: ethernal-cron
-    runtime: python
-    region: oregon
-    plan: free
-    schedule: "*/5 * * * *"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m cron.run
-
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.3"
-      - key: ENVIRONMENT
-        value: production
-      - key: LOG_LEVEL
-        value: INFO
-
-      - key: DATABASE_URL
-        sync: false
-
-      # El cron necesita ambas RPCs para verificar confirmaciones
-      - key: ETH_RPC_URL
-        sync: false
-      - key: ETH_CHAIN_ID
-        value: "11155111"
-
-      - key: ARB_RPC_URL
-        sync: false
-      - key: ARB_CHAIN_ID
-        value: "421614"
-
-      - key: SENTRY_ENABLED
-        value: "false"
-      - key: SENTRY_DSN
-        value: ""
-
-  # ════════════════════════════════════════════════════════════════════════════
-  # REDIS
-  # Solo el web service lo usa (rate limiting + nonce SIWE).
-  # Indexers y cron operan directo contra la DB — no conectar Redis desde ellos.
-  # ════════════════════════════════════════════════════════════════════════════
-  - type: redis
-    name: ethernal-redis
-    region: oregon
-    plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList: []
