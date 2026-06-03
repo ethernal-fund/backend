@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi                import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from web3                   import Web3
+from web3 import Web3
 
-from api.db.session                  import get_db
-from api.db.repositories.fund_repo   import FundRepository
-from api.db.repositories.user_repo   import UserRepository
-from api.core.dependencies           import get_current_wallet
-from api.core.exceptions             import FundNotFound
-from api.schemas.funds               import FundOut, FundSyncRequest, RegisterFundRequest
+from api.db.session import get_db
+from api.db.repositories.fund_repo import FundRepository
+from api.db.repositories.user_repo import UserRepository
+from api.core.dependencies import get_current_wallet_retirement  # ← audience retirement
+from api.core.exceptions import FundNotFound
+from api.schemas.funds import FundOut, FundSyncRequest, RegisterFundRequest
 from api.services.blockchain_service import BlockchainService
 
 logger = logging.getLogger(__name__)
@@ -20,31 +20,33 @@ router = APIRouter(prefix="/funds", tags=["funds"])
 @router.post("/register", status_code=201)
 async def register_fund(
     payload: RegisterFundRequest,
-    wallet:  str           = Depends(get_current_wallet),
-    db:      AsyncSession  = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Registra un fondo en la base de datos después de su creación on-chain.
+    Requiere autenticación con audience='retirement'.
+    """
     if not Web3.is_address(payload.contract_address):
         raise HTTPException(status_code=400, detail="Invalid contract_address")
     if not Web3.is_address(payload.protocol_address):
         raise HTTPException(status_code=400, detail="Invalid protocol_address")
     contract_address = Web3.to_checksum_address(payload.contract_address)
-    fund_repo        = FundRepository(db)
-
+    fund_repo = FundRepository(db)
     fund, created = await fund_repo.create_from_event({
-        "contract_address":  contract_address.lower(),
-        "owner_wallet":      wallet.lower(),
-        "principal":         payload.principal,
-        "monthly_deposit":   payload.monthly_deposit,
-        "desired_monthly":   payload.desired_monthly_income,
-        "current_age":       payload.current_age,
-        "retirement_age":    payload.retirement_age,
-        "years_payments":    payload.payment_years,
-        "interest_rate":     payload.interest_rate_bps,
-        "timelock_years":    payload.timelock_years,
-        "timelock_end":      payload.timelock_end,
+        "contract_address": contract_address.lower(),
+        "owner_wallet": wallet.lower(),
+        "principal": payload.principal,
+        "monthly_deposit": payload.monthly_deposit,
+        "desired_monthly": payload.desired_monthly_income,
+        "current_age": payload.current_age,
+        "retirement_age": payload.retirement_age,
+        "years_payments": payload.payment_years,
+        "interest_rate": payload.interest_rate_bps,
+        "timelock_years": payload.timelock_years,
+        "timelock_end": payload.timelock_end,
         "selected_protocol": payload.protocol_address.lower(),
     })
-
     if not created:
         logger.info("Fund already registered: %s", contract_address)
     else:
@@ -52,36 +54,35 @@ async def register_fund(
         try:
             await UserRepository(db).touch(wallet)
         except Exception:
-            logger.warning(
-                "Failed to touch users.last_active_at | wallet=%s",
-                wallet[:10],
-                exc_info=True,
-            )
+            logger.warning("Failed to touch users.last_active_at | wallet=%s", wallet[:10])
 
     return {
-        "success":          True,
-        "created":          created,
+        "success": True,
+        "created": created,
         "contract_address": fund.contract_address,
-        "owner_wallet":     fund.owner_wallet,
+        "owner_wallet": fund.owner_wallet,
     }
 
 @router.post("/sync")
 async def sync_fund(
     payload: FundSyncRequest,
-    wallet:  str           = Depends(get_current_wallet),
-    db:      AsyncSession  = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Sincroniza un fondo con los datos on-chain.
+    Requiere autenticación con audience='retirement'.
+    """
     if not Web3.is_address(payload.contract_address):
         raise HTTPException(status_code=400, detail="Invalid contract_address")
     fund_repo = FundRepository(db)
-    fund      = await fund_repo.get_by_owner(wallet)
+    fund = await fund_repo.get_by_owner(wallet)
     if not fund:
         raise FundNotFound(wallet)
-
     if fund.contract_address.lower() != payload.contract_address.lower():
         raise HTTPException(status_code=403, detail="Not your fund")
     try:
-        blockchain    = BlockchainService()
+        blockchain = BlockchainService()
         on_chain_data = await blockchain.get_fund_info(fund.contract_address)
         await fund_repo.update_balances(fund.contract_address, on_chain_data)
         logger.info("Fund synced: %s", fund.contract_address)
@@ -92,11 +93,16 @@ async def sync_fund(
 
 @router.get("/me", response_model=FundOut)
 async def get_my_fund(
-    wallet: str           = Depends(get_current_wallet),
-    db:     AsyncSession  = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Obtiene el fondo del wallet autenticado.
+    Requiere autenticación con audience='retirement'.
+    """
     fund_repo = FundRepository(db)
-    fund      = await fund_repo.get_by_owner(wallet)
+    fund = await fund_repo.get_by_owner(wallet)
+
     if not fund:
         raise FundNotFound(wallet)
     return fund
@@ -105,11 +111,16 @@ async def get_my_fund(
 async def get_fund(
     contract_address: str,
     db: AsyncSession = Depends(get_db),
+    # Endpoint público - no requiere autenticación
 ):
+    """
+    Obtiene información de un fondo por dirección de contrato.
+    Endpoint público (no requiere autenticación).
+    """
     if not Web3.is_address(contract_address):
         raise HTTPException(status_code=400, detail="Invalid contract address")
     fund_repo = FundRepository(db)
-    fund      = await fund_repo.get_by_contract(contract_address)
+    fund = await fund_repo.get_by_contract(contract_address)
     if not fund:
         raise FundNotFound(contract_address)
     return fund

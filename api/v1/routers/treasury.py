@@ -7,7 +7,10 @@ from web3 import Web3
 from api.db.session import get_db
 from api.db.repositories.fund_repo import FundRepository
 from api.db.repositories.treasury_repo import TreasuryRepository
-from api.core.dependencies import get_current_wallet, require_admin
+from api.core.dependencies import (
+    get_current_wallet_retirement,  # ← audience retirement
+    require_admin_retirement,       # ← admin con audience retirement
+)
 from api.services.blockchain_service import BlockchainService
 from api.config import settings
 import logging
@@ -17,15 +20,19 @@ router = APIRouter(prefix="/treasury", tags=["treasury"])
 
 class EarlyRetirementRequestPayload(BaseModel):
     fund_address: str
-    reason:       str = Field(..., min_length=20, max_length=512)
+    reason: str = Field(..., min_length=20, max_length=512)
 
 class ProcessRequestPayload(BaseModel):
     fund_address: str
-    approve:      bool
-    admin_notes:  Optional[str] = None
+    approve: bool
+    admin_notes: Optional[str] = None
 
 @router.get("/stats")
 async def get_treasury_stats():
+    """
+    Estadísticas públicas del treasury.
+    No requiere autenticación.
+    """
     try:
         blockchain = BlockchainService()
         return await blockchain.get_treasury_stats()
@@ -35,34 +42,40 @@ async def get_treasury_stats():
 
 @router.get("/fees/me")
 async def get_my_fees(
-    wallet: str          = Depends(get_current_wallet),
-    db:     AsyncSession = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
-    fund_repo     = FundRepository(db)
+    """
+    Obtiene las comisiones pagadas por el fondo del wallet autenticado.
+    Requiere autenticación con audience='retirement'.
+    """
+    fund_repo = FundRepository(db)
     treasury_repo = TreasuryRepository(db)
-    fund          = await fund_repo.get_by_owner(wallet)
+    fund = await fund_repo.get_by_owner(wallet)
     if not fund:
         raise HTTPException(status_code=404, detail="No fund found for this wallet")
     record = await treasury_repo.get_fee_record(fund.contract_address)
     if not record:
         return {"total_fees_paid": 0, "fee_count": 0, "last_fee_at": None}
-
     return {
-        "fund_address":    record.fund_address,
+        "fund_address": record.fund_address,
         "total_fees_paid": float(record.total_fees_paid),
-        "fee_count":       record.fee_count,
-        "last_fee_at":     record.last_fee_at,
+        "fee_count": record.fee_count,
+        "last_fee_at": record.last_fee_at,
     }
 
 @router.post("/early-retirement/request")
 async def request_early_retirement(
     payload: EarlyRetirementRequestPayload,
-    wallet:  str          = Depends(get_current_wallet),
-    db:      AsyncSession = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
-    fund_repo     = FundRepository(db)
+    """
+    Solicita retiro anticipado para el fondo del wallet autenticado.
+    Requiere autenticación con audience='retirement'.
+    """
+    fund_repo = FundRepository(db)
     treasury_repo = TreasuryRepository(db)
-
     fund = await fund_repo.get_by_owner(wallet)
     if not fund:
         raise HTTPException(status_code=404, detail="No fund found for this wallet")
@@ -74,30 +87,33 @@ async def request_early_retirement(
     if existing and existing.status == "pending":
         raise HTTPException(status_code=409, detail="You already have a pending request")
     await treasury_repo.create_request({
-        "fund_address":     fund.contract_address.lower(),
+        "id": None,  # Se genera automáticamente
+        "fund_address": fund.contract_address.lower(),
         "requester_wallet": wallet.lower(),
-        "reason":           payload.reason,
-        "status":           "pending",
+        "reason": payload.reason,
+        "status": "pending",
     })
-
     treasury_address = Web3.to_checksum_address(
         settings.get_contract_address("TREASURY_ADDRESS")
     )
-
     return {
-        "success":          True,
-        "message":          "Call Treasury.requestEarlyRetirement() on-chain with this data",
-        "fund_address":     fund.contract_address,
+        "success": True,
+        "message": "Call Treasury.requestEarlyRetirement() on-chain with this data",
+        "fund_address": fund.contract_address,
         "treasury_address": treasury_address,
-        "reason":           payload.reason,
+        "reason": payload.reason,
     }
 
 @router.get("/early-retirement/me")
 async def get_my_early_retirement_request(
-    wallet: str          = Depends(get_current_wallet),
-    db:     AsyncSession = Depends(get_db),
+    wallet: str = Depends(get_current_wallet_retirement),  # ← retirement audience
+    db: AsyncSession = Depends(get_db),
 ):
-    fund_repo     = FundRepository(db)
+    """
+    Obtiene el estado de la solicitud de retiro anticipado del wallet autenticado.
+    Requiere autenticación con audience='retirement'.
+    """
+    fund_repo = FundRepository(db)
     treasury_repo = TreasuryRepository(db)
     fund = await fund_repo.get_by_owner(wallet)
     if not fund:
@@ -107,29 +123,32 @@ async def get_my_early_retirement_request(
         return {"has_request": False}
     latest = requests[0]
     return {
-        "has_request":  True,
-        "status":       latest.status,
-        "reason":       latest.reason,
+        "has_request": True,
+        "status": latest.status,
+        "reason": latest.reason,
         "requested_at": latest.requested_at,
         "processed_at": latest.processed_at,
-        "admin_notes":  latest.admin_notes,
+        "admin_notes": latest.admin_notes,
     }
 
 @router.get("/early-retirement/pending")
 async def get_pending_requests(
-    admin: str          = Depends(require_admin),
-    db:    AsyncSession = Depends(get_db),
+    admin: str = Depends(require_admin_retirement),  # ← admin con audience retirement
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Lista solicitudes de retiro anticipado pendientes.
+    Requiere autenticación con audience='retirement' y wallet admin.
+    """
     treasury_repo = TreasuryRepository(db)
-    requests      = await treasury_repo.get_pending()
-
+    requests = await treasury_repo.get_pending()
     return {
         "pending_requests": [
             {
-                "id":           r.id,
+                "id": r.id,
                 "fund_address": r.fund_address,
-                "requester":    r.requester_wallet,
-                "reason":       r.reason,
+                "requester": r.requester_wallet,
+                "reason": r.reason,
                 "requested_at": r.requested_at,
             }
             for r in requests
@@ -140,9 +159,13 @@ async def get_pending_requests(
 @router.post("/early-retirement/process")
 async def process_early_retirement(
     payload: ProcessRequestPayload,
-    admin:   str          = Depends(require_admin),
-    db:      AsyncSession = Depends(get_db),
+    admin: str = Depends(require_admin_retirement),  # ← admin con audience retirement
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Procesa una solicitud de retiro anticipado (aprobar/rechazar).
+    Requiere autenticación con audience='retirement' y wallet admin.
+    """
     treasury_repo = TreasuryRepository(db)
     result = await treasury_repo.process_request(
         fund_address=payload.fund_address,
@@ -150,15 +173,13 @@ async def process_early_retirement(
         processed_by=admin,
         admin_notes=payload.admin_notes,
     )
-
     if not result:
         raise HTTPException(
             status_code=404,
             detail="No pending request found for this fund address",
         )
-
     return {
-        "success":      True,
-        "status":       result.status,
+        "success": True,
+        "status": result.status,
         "processed_at": result.processed_at,
     }
