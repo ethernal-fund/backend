@@ -1,13 +1,10 @@
 from __future__ import annotations
-
-from datetime import datetime
-from typing import Optional
-
-from pydantic import BaseModel, Field, field_validator
+from datetime   import datetime
+from typing     import Optional
+from pydantic   import BaseModel, Field, field_validator
 
 class NonceRequest(BaseModel):
     wallet_address: str
-
     @field_validator("wallet_address")
     @classmethod
     def validate_wallet(cls, v: str) -> str:
@@ -57,6 +54,7 @@ class AuthStatusResponse(BaseModel):
     """Respuesta de GET /users/auth/status — verificación rápida sin DB."""
     authenticated:  bool            = Field(..., description="True si el token es válido y no fue revocado")
     wallet_address: Optional[str]   = Field(None, description="Wallet del token (solo si authenticated=True)")
+    audience:       Optional[str]   = Field(None, description="Tipo de User")
     expires_at:     Optional[str]   = Field(None, description="ISO 8601 timestamp de expiración del access token")
 
 class RefreshRequest(BaseModel):

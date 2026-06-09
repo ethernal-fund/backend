@@ -37,11 +37,11 @@ services:
         value: "11155111,421614"
 
       - key: SALE_RPC_URL
-        sync: false                    # ← Setear en Render Dashboard
+        sync: false                    
       - key: SALE_CONTRACT_ADDRESS
-        sync: false                    # ← Setear en Render Dashboard
+        sync: false                   
       - key: VESTING_CONTRACT_ADDRESS
-        sync: false                    # ← Setear en Render Dashboard
+        sync: false                    
       - key: SALE_CHAIN_ID
         value: "11155111"
 

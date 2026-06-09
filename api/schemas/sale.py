@@ -1,33 +1,12 @@
-"""
-Schemas Pydantic para todo lo relacionado con la sale ETRF.
-Cubren tres capas:
-
-  1. Respuestas de API  (sufijo Response / Out)
-  2. Datos internos     (sufijo Data — entre servicios, sin serialización HTTP)
-  3. Requests entrantes (sufijo Request / In)
-
-Naming convention:
-  - Cantidades USDC  → str formateado "1000.50"  (6 decimales en chain)
-  - Cantidades ETRF  → str formateado "150000.00" (18 decimales en chain)
-  - Timestamps       → int (Unix epoch UTC)
-  - Porcentajes      → float  0.0–100.0
-
-Los schemas "Raw" reflejan exactamente lo que devuelven los contratos Vyper
-antes de formatear. Se usan internamente en chain.py / vesting.py y
-se convierten a los schemas de respuesta en los endpoints.
-"""
 from __future__ import annotations
-
-from enum import Enum
-from typing import Optional
-
-from pydantic import BaseModel, Field, field_validator
+from enum       import Enum
+from typing     import Optional
+from pydantic   import BaseModel, Field, field_validator
 
 class RoundStatus(str, Enum):
     upcoming   = "upcoming"
     active     = "active"
     ended      = "ended"
-
 
 class EventType(str, Enum):
     purchase = "purchase"
@@ -66,7 +45,6 @@ class RawPurchaseData(BaseModel):
     usdc_spent:     int
     tokens_bought:  int
     has_purchased:  bool
-    # Enriquecidos desde VestingETRF — pueden ser 0 si el usuario no compró
     tokens_vested:  int = 0
     tokens_claimed: int = 0
     claimable:      int = 0
@@ -89,7 +67,7 @@ class RawRoundInfo(BaseModel):
     """
     tokens_reserved: int
     tokens_sold:     int
-    end_time:        int   # 0 si no finalizada
+    end_time:        int  
     recovered:       bool
     is_active:       bool
 
@@ -127,7 +105,6 @@ class PurchaseResponse(BaseModel):
     tokens_claimed: str   = Field(description="ETRF ya reclamados")
     claimable:      str   = Field(description="ETRF disponibles para reclamar ahora")
     start_time:     int   = Field(description="Timestamp de inicio del vesting")
-    # Calculados por el backend para comodidad del frontend
     cliff_ends_at:  int   = Field(0, description="Timestamp en que termina el cliff")
     vesting_ends_at:int   = Field(0, description="Timestamp en que termina el vesting")
 

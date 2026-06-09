@@ -4,23 +4,23 @@ import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing   import Optional, Tuple
 
 import jwt
-from eth_account import Account
+from eth_account          import Account
 from eth_account.messages import encode_defunct
-from fastapi import Request
+from fastapi              import Request
 
-from api.config import settings
-from api.core.redis import get_redis
+from api.config           import settings
+from api.core.redis       import get_redis
 
 logger = logging.getLogger(__name__)
 
 # Redis key prefixes
-_NONCE_PREFIX = "nonce:"          # nonce:<wallet> → JSON {nonce, message, audience}
-_REFRESH_PREFIX = "refresh:"      # refresh:<token> → JSON {wallet, audience}
-_BLACKLIST_PREFIX = "jwt_bl:"     # jwt_bl:<jti> → "1"
-_REFRESH_IDX_PREFIX = "ridx:"     # ridx:<wallet> → set{token, ...}
+_NONCE_PREFIX       = "nonce:"                          # nonce:<wallet> → JSON {nonce, message, audience}
+_REFRESH_PREFIX     = "refresh:"                        # refresh:<token> → JSON {wallet, audience}
+_BLACKLIST_PREFIX   = "jwt_bl:"                         # jwt_bl:<jti> → "1"
+_REFRESH_IDX_PREFIX = "ridx:"                           # ridx:<wallet> → set{token, ...}
 
 def extract_token_from_request(request: Request) -> Optional[str]:
     """Extrae el access token desde cookie HttpOnly o header Authorization."""
@@ -28,11 +28,9 @@ def extract_token_from_request(request: Request) -> Optional[str]:
     token = request.cookies.get(cookie_name)
     if token:
         return token
-
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[len("Bearer "):].strip()
-
     return None
 
 def build_siwe_message(wallet_address: str, nonce: str, audience: str) -> str:
@@ -40,8 +38,14 @@ def build_siwe_message(wallet_address: str, nonce: str, audience: str) -> str:
     Construye el mensaje EIP-4361 con campo Audience personalizado.
     """
     issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    domain = settings.APP_DOMAIN or "ethernal.fund"
-    uri = settings.APP_URL or "https://ethernal.fund"
+    domain    = settings.APP_DOMAIN or "ethernal.fund"
+    uri       = settings.APP_URL or "https://ethernal.fund"
+
+    chain_id  = (
+        settings.SALE_CHAIN_ID
+        if audience == "sale"
+        else settings.CHAIN_ID
+    )
 
     # Mapeo de audience a texto legible en el mensaje
     audience_display = {
@@ -56,7 +60,7 @@ def build_siwe_message(wallet_address: str, nonce: str, audience: str) -> str:
         f"\n"
         f"URI: {uri}\n"
         f"Version: 1\n"
-        f"Chain ID: {settings.SALE_CHAIN_ID}\n"
+        f"Chain ID: {chain_id}\n"
         f"Nonce: {nonce}\n"
         f"Audience: {audience}\n"
         f"Issued At: {issued_at}"
@@ -152,9 +156,6 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.InvalidTokenError as exc:
         logger.debug("Invalid access token: %s", exc)
         return None
-
-
-# Alias para compatibilidad
 decode_token = decode_access_token
 
 async def blacklist_token(token: str) -> None:
@@ -163,16 +164,13 @@ async def blacklist_token(token: str) -> None:
     if not payload:
         logger.debug("blacklist_token: token inválido o expirado, ignorado")
         return
-
     jti = payload.get("jti")
     if not jti:
         logger.warning("blacklist_token: token sin JTI")
         return
-
     exp = payload.get("exp", 0)
     now = datetime.now(timezone.utc).timestamp()
     ttl = max(int(exp - now), 1)
-
     redis = await get_redis()
     await redis.setex(_BLACKLIST_PREFIX + jti, ttl, "1")
     logger.info("Access token blacklisted | jti=%s ttl=%ds", jti[:8], ttl)
